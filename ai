@@ -12,7 +12,7 @@ AI_LAUNCHER_VERSION="1.0.0"
 # ║  CONFIGURE SUAS FLAGS AQUI                          ║
 # ╚══════════════════════════════════════════════════════╝
 CLAUDE_FLAGS=(--dangerously-skip-permissions)
-CODEX_FLAGS=(--full-auto --dangerously-bypass-approvals-and-sandbox)
+CODEX_FLAGS=(--dangerously-bypass-approvals-and-sandbox)
 GEMINI_FLAGS=(--yolo)
 
 # Flag de prompt para cada CLI (cada uma usa sintaxe diferente)
