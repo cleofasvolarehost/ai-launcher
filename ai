@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# ai - Lançador rápido de CLIs de IA com flags pré-configuradas
+# https://github.com/cleofasvolarehost/ai-launcher
+#
+# Uso: ai (interativo) | ai c/x/g (direto) | ai c "prompt aqui"
+
+set -euo pipefail
+
+# ╔══════════════════════════════════════════════════════╗
+# ║  CONFIGURE SUAS FLAGS AQUI                          ║
+# ╚══════════════════════════════════════════════════════╝
+CLAUDE_FLAGS="--dangerously-skip-permissions"
+CODEX_FLAGS="--full-auto --dangerously-bypass-approvals-and-sandbox"
+GEMINI_FLAGS="--yolo"
+
+# ╔══════════════════════════════════════════════════════╗
+# ║  API KEYS ESPERADAS (deixe vazio para ignorar)      ║
+# ╚══════════════════════════════════════════════════════╝
+CLAUDE_KEY_VAR="ANTHROPIC_API_KEY"
+CODEX_KEY_VAR="OPENAI_API_KEY"
+GEMINI_KEY_VAR="GEMINI_API_KEY"
+
+# Arquivo de histórico
+HISTORY_FILE="${HOME}/.local/share/ai-launcher/history"
+mkdir -p "$(dirname "$HISTORY_FILE")"
+
+# Cores
+BOLD='\033[1m'
+CYAN='\033[36m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+RED='\033[31m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+# ── Funções utilitárias ──────────────────────────────────
+
+get_version() {
+    local cmd="$1"
+    if command -v "$cmd" &>/dev/null; then
+        "$cmd" --version 2>/dev/null | head -1 || echo "?"
+    fi
+}
+
+check_installed() {
+    command -v "$1" &>/dev/null
+}
+
+check_key() {
+    local var_name="$1"
+    [[ -z "$var_name" ]] && return 0
+    [[ -n "${!var_name:-}" ]]
+}
+
+status_icon() {
+    local cmd="$1" key_var="$2"
+    if ! check_installed "$cmd"; then
+        echo -e "${RED}✗ não instalado${RESET}"
+    elif ! check_key "$key_var"; then
+        echo -e "${YELLOW}⚠ sem \$$key_var${RESET}"
+    else
+        echo -e "${GREEN}✔${RESET}"
+    fi
+}
+
+save_history() {
+    echo "$(date '+%Y-%m-%d %H:%M') | $1" >> "$HISTORY_FILE"
+}
+
+show_last_used() {
+    if [[ -f "$HISTORY_FILE" ]]; then
+        local last
+        last=$(tail -1 "$HISTORY_FILE")
+        echo -e "  ${DIM}Último uso: ${last}${RESET}"
+    fi
+}
+
+launch() {
+    local name="$1" cmd="$2" flags="$3" key_var="$4"
+    shift 4
+
+    if ! check_installed "$cmd"; then
+        echo -e "${RED}Erro: ${cmd} não está instalado.${RESET}"
+        case "$cmd" in
+            claude) echo "  Instale: npm install -g @anthropic-ai/claude-code" ;;
+            codex)  echo "  Instale: npm install -g @openai/codex" ;;
+            gemini) echo "  Instale: sudo npm install -g @google/gemini-cli" ;;
+        esac
+        exit 1
+    fi
+
+    if ! check_key "$key_var"; then
+        echo -e "${YELLOW}Aviso: \$$key_var não definida. O $name pode não funcionar.${RESET}"
+        read -rp "Continuar mesmo assim? [s/N]: " yn
+        [[ "$yn" != [sS] ]] && exit 0
+    fi
+
+    save_history "$name"
+
+    if [[ $# -gt 0 ]]; then
+        local prompt="$*"
+        echo -e "${GREEN}Iniciando ${name}:${RESET} ${cmd} ${flags} -p \"${prompt}\""
+        echo ""
+        exec $cmd $flags -p "$prompt"
+    else
+        echo -e "${GREEN}Iniciando ${name}:${RESET} ${cmd} ${flags}"
+        echo ""
+        exec $cmd $flags
+    fi
+}
+
+# ── Help ─────────────────────────────────────────────────
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+    echo "Uso: ai [opção] [\"prompt\"]"
+    echo ""
+    echo "Opções:"
+    echo "  claude, c    Abre Claude Code"
+    echo "  codex,  x    Abre Codex CLI"
+    echo "  gemini, g    Abre Gemini CLI"
+    echo "  -h, --help   Mostra esta ajuda"
+    echo "  --config     Abre este script para editar"
+    echo "  --history    Mostra histórico de uso"
+    echo ""
+    echo "Exemplos:"
+    echo "  ai                        Menu interativo"
+    echo "  ai c                      Abre Claude direto"
+    echo "  ai c \"corrige o bug\"      Abre Claude com prompt"
+    echo "  ai g \"explica este código\" Abre Gemini com prompt"
+    exit 0
+fi
+
+if [[ ${1:-} == "--config" ]]; then
+    echo "Abrindo script para edição..."
+    ${EDITOR:-nano} "${BASH_SOURCE[0]}"
+    exit 0
+fi
+
+if [[ ${1:-} == "--history" ]]; then
+    if [[ -f "$HISTORY_FILE" ]]; then
+        echo -e "${BOLD}Histórico de uso:${RESET}"
+        tail -20 "$HISTORY_FILE"
+    else
+        echo "Nenhum histórico ainda."
+    fi
+    exit 0
+fi
+
+# ── Atalhos diretos ──────────────────────────────────────
+
+if [[ ${1:-} == "claude" || ${1:-} == "c" ]]; then
+    shift; launch "Claude Code" claude "$CLAUDE_FLAGS" "$CLAUDE_KEY_VAR" "$@"
+elif [[ ${1:-} == "codex" || ${1:-} == "x" ]]; then
+    shift; launch "Codex" codex "$CODEX_FLAGS" "$CODEX_KEY_VAR" "$@"
+elif [[ ${1:-} == "gemini" || ${1:-} == "g" ]]; then
+    shift; launch "Gemini" gemini "$GEMINI_FLAGS" "$GEMINI_KEY_VAR" "$@"
+elif [[ -n ${1:-} ]]; then
+    echo "Opção desconhecida: $1"
+    echo "Use: ai --help"
+    exit 1
+fi
+
+# ── Menu interativo ──────────────────────────────────────
+
+claude_status=$(status_icon claude "$CLAUDE_KEY_VAR")
+codex_status=$(status_icon codex "$CODEX_KEY_VAR")
+gemini_status=$(status_icon gemini "$GEMINI_KEY_VAR")
+
+claude_ver=$(get_version claude)
+codex_ver=$(get_version codex)
+gemini_ver=$(get_version gemini)
+
+echo -e "${BOLD}${CYAN}"
+echo "  ┌──────────────────────────────────────────────────┐"
+echo "  │              AI CLI Launcher                     │"
+echo "  └──────────────────────────────────────────────────┘"
+echo -e "${RESET}"
+
+printf "  ${BOLD}1)${RESET} Claude Code  %-20s %b\n" "${claude_ver}" "${claude_status}"
+printf "  ${BOLD}2)${RESET} Codex        %-20s %b\n" "${codex_ver}" "${codex_status}"
+printf "  ${BOLD}3)${RESET} Gemini       %-20s %b\n" "${gemini_ver}" "${gemini_status}"
+echo -e "  ${DIM}0) Sair${RESET}"
+echo ""
+
+echo -e "${YELLOW}Flags:${RESET}"
+echo -e "  ${DIM}Claude: ${CLAUDE_FLAGS}${RESET}"
+echo -e "  ${DIM}Codex:  ${CODEX_FLAGS}${RESET}"
+echo -e "  ${DIM}Gemini: ${GEMINI_FLAGS}${RESET}"
+echo ""
+
+show_last_used
+echo ""
+
+read -rp "Escolha [1/2/3/0]: " choice
+
+case $choice in
+    1) launch "Claude Code" claude "$CLAUDE_FLAGS" "$CLAUDE_KEY_VAR" ;;
+    2) launch "Codex" codex "$CODEX_FLAGS" "$CODEX_KEY_VAR" ;;
+    3) launch "Gemini" gemini "$GEMINI_FLAGS" "$GEMINI_KEY_VAR" ;;
+    0) echo "Saindo."; exit 0 ;;
+    *) echo "Opção inválida."; exit 1 ;;
+esac
