@@ -8,10 +8,11 @@ BOLD='\033[1m'
 GREEN='\033[32m'
 YELLOW='\033[33m'
 CYAN='\033[36m'
+RED='\033[31m'
 RESET='\033[0m'
 
 INSTALL_DIR="${HOME}/.local/bin"
-REPO_URL="https://raw.githubusercontent.com/cleofasvolarehost/ai-launcher/main/ai"
+REPO_RAW="https://raw.githubusercontent.com/cleofasvolarehost/ai-launcher/main"
 
 echo -e "${BOLD}${CYAN}"
 echo "  ┌──────────────────────────────────────┐"
@@ -19,31 +20,53 @@ echo "  │   AI CLI Launcher - Instalador       │"
 echo "  └──────────────────────────────────────┘"
 echo -e "${RESET}"
 
+# Verificar bash mínimo (precisa de 4+ para namerefs e arrays)
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+    echo -e "${RED}Erro: Bash 4+ necessário (você tem ${BASH_VERSION}).${RESET}"
+    echo "  macOS: brew install bash"
+    exit 1
+fi
+
 # Criar diretório se não existir
 mkdir -p "$INSTALL_DIR"
+
+# Verificar se já está instalado (backup)
+if [[ -f "${INSTALL_DIR}/ai" ]]; then
+    echo -e "${YELLOW}Versão anterior encontrada. Fazendo backup...${RESET}"
+    cp "${INSTALL_DIR}/ai" "${INSTALL_DIR}/ai.bak"
+fi
 
 # Baixar o script
 echo -e "${GREEN}Baixando ai-launcher...${RESET}"
 if command -v curl &>/dev/null; then
-    curl -fsSL "$REPO_URL" -o "${INSTALL_DIR}/ai"
+    if ! curl -fsSL "${REPO_RAW}/ai" -o "${INSTALL_DIR}/ai"; then
+        echo -e "${RED}Erro ao baixar. Verifique sua conexão.${RESET}"
+        # Restaurar backup se existir
+        [[ -f "${INSTALL_DIR}/ai.bak" ]] && mv "${INSTALL_DIR}/ai.bak" "${INSTALL_DIR}/ai"
+        exit 1
+    fi
 elif command -v wget &>/dev/null; then
-    wget -qO "${INSTALL_DIR}/ai" "$REPO_URL"
+    if ! wget -qO "${INSTALL_DIR}/ai" "${REPO_RAW}/ai"; then
+        echo -e "${RED}Erro ao baixar. Verifique sua conexão.${RESET}"
+        [[ -f "${INSTALL_DIR}/ai.bak" ]] && mv "${INSTALL_DIR}/ai.bak" "${INSTALL_DIR}/ai"
+        exit 1
+    fi
 else
-    echo "Erro: curl ou wget necessário."
+    echo -e "${RED}Erro: curl ou wget necessário.${RESET}"
     exit 1
 fi
 
 chmod +x "${INSTALL_DIR}/ai"
 
-# Verificar se ~/.local/bin está no PATH
-if ! echo "$PATH" | tr ':' '\n' | grep -q "${HOME}/.local/bin"; then
-    echo ""
-    echo -e "${YELLOW}Adicione ao seu shell (~/.bashrc ou ~/.zshrc):${RESET}"
-    echo ""
-    echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo ""
+# Limpar backup se tudo deu certo
+rm -f "${INSTALL_DIR}/ai.bak"
 
-    # Tentar adicionar automaticamente
+# Verificar se ~/.local/bin está no PATH
+if ! echo "$PATH" | tr ':' '\n' | grep -q "^${HOME}/.local/bin$"; then
+    echo ""
+    echo -e "${YELLOW}~/.local/bin não está no PATH.${RESET}"
+
+    # Detectar shell config
     SHELL_RC=""
     if [[ -f "${HOME}/.zshrc" ]]; then
         SHELL_RC="${HOME}/.zshrc"
@@ -52,11 +75,22 @@ if ! echo "$PATH" | tr ':' '\n' | grep -q "${HOME}/.local/bin"; then
     fi
 
     if [[ -n "$SHELL_RC" ]]; then
-        read -rp "Adicionar ao ${SHELL_RC} automaticamente? [s/N]: " yn
-        if [[ "$yn" == [sS] ]]; then
-            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
-            echo -e "${GREEN}Adicionado! Rode: source ${SHELL_RC}${RESET}"
+        # Evitar duplicatas
+        if ! grep -q 'HOME/.local/bin' "$SHELL_RC" 2>/dev/null; then
+            read -rp "Adicionar ao ${SHELL_RC} automaticamente? [s/N]: " yn
+            if [[ "$yn" == [sS] ]]; then
+                echo '' >> "$SHELL_RC"
+                echo '# AI CLI Launcher' >> "$SHELL_RC"
+                echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
+                echo -e "${GREEN}Adicionado! Rode: source ${SHELL_RC}${RESET}"
+            fi
+        else
+            echo -e "${DIM}PATH já configurado em ${SHELL_RC}, mas shell atual não carregou.${RESET}"
+            echo -e "  Rode: source ${SHELL_RC}"
         fi
+    else
+        echo "  Adicione manualmente ao seu shell config:"
+        echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
     fi
 fi
 
