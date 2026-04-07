@@ -20,13 +20,6 @@ CLAUDE_PROMPT_FLAG="-p"
 CODEX_PROMPT_FLAG="-p"
 GEMINI_PROMPT_FLAG="-p"
 
-# ╔══════════════════════════════════════════════════════╗
-# ║  API KEYS ESPERADAS (deixe vazio para ignorar)      ║
-# ╚══════════════════════════════════════════════════════╝
-CLAUDE_KEY_VAR="ANTHROPIC_API_KEY"
-CODEX_KEY_VAR="OPENAI_API_KEY"
-GEMINI_KEY_VAR="GEMINI_API_KEY"
-
 # Arquivo de histórico
 HISTORY_FILE="${HOME}/.local/share/ai-launcher/history"
 mkdir -p "$(dirname "$HISTORY_FILE")"
@@ -67,11 +60,9 @@ check_key() {
 }
 
 status_icon() {
-    local cmd="$1" key_var="$2"
+    local cmd="$1"
     if ! check_installed "$cmd"; then
         echo -e "${RED}✗ não instalado${RESET}"
-    elif ! check_key "$key_var"; then
-        echo -e "${YELLOW}⚠ sem \$$key_var${RESET}"
     else
         echo -e "${GREEN}✔${RESET}"
     fi
@@ -90,8 +81,8 @@ show_last_used() {
 }
 
 launch() {
-    local name="$1" cmd="$2" prompt_flag="$3" key_var="$4"
-    shift 4
+    local name="$1" cmd="$2" prompt_flag="$3"
+    shift 3
     # Remaining $@ = user prompt args
 
     # $@ from caller also has the flags array passed via nameref
@@ -106,12 +97,6 @@ launch() {
             gemini) echo "  Instale: sudo npm install -g @google/gemini-cli" ;;
         esac
         exit 1
-    fi
-
-    if ! check_key "$key_var"; then
-        echo -e "${YELLOW}Aviso: \$$key_var não definida. O $name pode não funcionar.${RESET}"
-        read -rp "Continuar mesmo assim? [s/N]: " yn
-        [[ "$yn" != [sS] ]] && exit 0
     fi
 
     save_history "$name"
@@ -178,11 +163,11 @@ fi
 # ── Atalhos diretos ──────────────────────────────────────
 
 if [[ ${1:-} == "claude" || ${1:-} == "c" ]]; then
-    shift; launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" "$CLAUDE_KEY_VAR" CLAUDE_FLAGS "$@"
+    shift; launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS "$@"
 elif [[ ${1:-} == "codex" || ${1:-} == "x" ]]; then
-    shift; launch "Codex" codex "$CODEX_PROMPT_FLAG" "$CODEX_KEY_VAR" CODEX_FLAGS "$@"
+    shift; launch "Codex" codex "$CODEX_PROMPT_FLAG" CODEX_FLAGS "$@"
 elif [[ ${1:-} == "gemini" || ${1:-} == "g" ]]; then
-    shift; launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" "$GEMINI_KEY_VAR" GEMINI_FLAGS "$@"
+    shift; launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" GEMINI_FLAGS "$@"
 elif [[ -n ${1:-} ]]; then
     echo "Opção desconhecida: $1"
     echo "Use: ai --help"
@@ -191,9 +176,9 @@ fi
 
 # ── Menu interativo ──────────────────────────────────────
 
-claude_status=$(status_icon claude "$CLAUDE_KEY_VAR")
-codex_status=$(status_icon codex "$CODEX_KEY_VAR")
-gemini_status=$(status_icon gemini "$GEMINI_KEY_VAR")
+claude_status=$(status_icon claude)
+codex_status=$(status_icon codex)
+gemini_status=$(status_icon gemini)
 
 claude_ver=$(get_version claude)
 codex_ver=$(get_version codex)
@@ -223,9 +208,9 @@ echo ""
 read -rp "Escolha [1/2/3/0]: " choice
 
 case $choice in
-    1) launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" "$CLAUDE_KEY_VAR" CLAUDE_FLAGS ;;
-    2) launch "Codex" codex "$CODEX_PROMPT_FLAG" "$CODEX_KEY_VAR" CODEX_FLAGS ;;
-    3) launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" "$GEMINI_KEY_VAR" GEMINI_FLAGS ;;
+    1) launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS ;;
+    2) launch "Codex" codex "$CODEX_PROMPT_FLAG" CODEX_FLAGS ;;
+    3) launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" GEMINI_FLAGS ;;
     0) echo "Saindo."; exit 0 ;;
     *) echo "Opção inválida."; exit 1 ;;
 esac

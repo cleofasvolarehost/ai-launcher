@@ -39,7 +39,7 @@ ai --help       # Ajuda
 ## Features
 
 - Menu interativo com versão e status de instalação
-- Verifica se API keys estão configuradas antes de lançar
+- Não exige `*_API_KEY`; o launcher delega autenticação para cada CLI
 - Histórico de uso
 - Passagem de prompt direto via linha de comando
 - Flags configuráveis no topo do script
@@ -54,6 +54,8 @@ npm install -g @anthropic-ai/claude-code   # Claude
 npm install -g @openai/codex               # Codex
 npm install -g @google/gemini-cli           # Gemini
 ```
+
+Depois, autentique cada ferramenta usando o fluxo nativo dela (`claude`, `codex` e `gemini`). O launcher não valida nem exige variáveis como `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` ou `GEMINI_API_KEY`.
 
 ## Personalização
 
