@@ -449,7 +449,10 @@ wt_prepare() {
         wt_name="$_WT_CREATED_NAME"
     else
         local wt_path="${base_dir}/${wt_name}"
-        if [[ ! -d "$wt_path" ]]; then
+        if [[ -d "$wt_path" ]]; then
+            # Worktree já existe — reutiliza
+            echo -e "${DIM}Usando worktree existente: ${wt_name}${RESET}"
+        else
             wt_new "$wt_name"
             wt_name="$_WT_CREATED_NAME"
         fi
@@ -653,13 +656,15 @@ if [[ ${1:-} == "claude" || ${1:-} == "c" ]]; then
             *)                   break ;;
         esac
     done
-    # Se -w, nomeia a sessão com o nome do worktree
-    if [[ "$_use_worktree" == true && -n "$_wt_arg_name" ]]; then
-        CLAUDE_FLAGS+=("--name" "$_wt_arg_name")
-    elif [[ "$_use_worktree" == true && -n "$_WT_CREATED_NAME" ]]; then
-        CLAUDE_FLAGS+=("--name" "$_WT_CREATED_NAME")
-    fi
     enter_worktree_if_needed "Claude"
+    # Auto-nomeia sessão com o worktree, se -n não foi passado manualmente
+    if [[ "$_use_worktree" == true && -n "$_WT_CREATED_NAME" ]]; then
+        local has_name=false
+        for f in "${CLAUDE_FLAGS[@]}"; do
+            [[ "$f" == "--name" ]] && has_name=true && break
+        done
+        [[ "$has_name" == false ]] && CLAUDE_FLAGS+=("--name" "$_WT_CREATED_NAME")
+    fi
     launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS "$@"
 elif [[ ${1:-} == "codex" || ${1:-} == "x" ]]; then
     shift
@@ -682,7 +687,7 @@ elif [[ ${1:-} == "w" || ${1:-} == "wt" ]]; then
         ls)    wt_list ;;
         del)   wt_delete "${1:-}" ;;
         clean) wt_clean ;;
-        open)  wt_open "${1:-}" "${2:-claude}" ;;
+        open)  wt_open "${1:-}" ;;
         "")    wt_menu ;;
         *)     echo -e "${RED}Subcomando desconhecido: ${subcmd}${RESET}"
                echo "Use: ai w new|ls|del|clean|open"
