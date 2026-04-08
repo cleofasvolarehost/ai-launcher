@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-AI_LAUNCHER_VERSION="1.0.0"
+AI_LAUNCHER_VERSION="1.1.0"
 
 # ╔══════════════════════════════════════════════════════╗
 # ║  CONFIGURE SUAS FLAGS AQUI                          ║
@@ -15,10 +15,25 @@ CLAUDE_FLAGS=(--dangerously-skip-permissions)
 CODEX_FLAGS=(--dangerously-bypass-approvals-and-sandbox)
 GEMINI_FLAGS=(--yolo)
 
+# Variáveis de ambiente para cada CLI
+export CLAUDE_CODE_NO_FLICKER=1
+
 # Flag de prompt para cada CLI (cada uma usa sintaxe diferente)
 CLAUDE_PROMPT_FLAG="-p"
 CODEX_PROMPT_FLAG="-p"
 GEMINI_PROMPT_FLAG="-p"
+
+# Perfis do Claude (flags extras por modo)
+declare -A CLAUDE_PROFILES=(
+    [fast]="--model sonnet --effort low"
+    [full]="--model opus --effort max"
+    [plan]="--model opus --permission-mode plan"
+    [sonnet]="--model sonnet"
+    [opus]="--model opus"
+)
+
+# Diretório base para worktrees
+WORKTREE_BASE="${HOME}/.worktrees"
 
 # Arquivo de histórico
 HISTORY_FILE="${HOME}/.local/share/ai-launcher/history"
@@ -53,12 +68,6 @@ check_installed() {
     command -v "$1" &>/dev/null
 }
 
-check_key() {
-    local var_name="$1"
-    [[ -z "$var_name" ]] && return 0
-    eval "[[ -n \"\${${var_name}:-}\" ]]"
-}
-
 status_icon() {
     local cmd="$1"
     if ! check_installed "$cmd"; then
@@ -83,9 +92,7 @@ show_last_used() {
 launch() {
     local name="$1" cmd="$2" prompt_flag="$3"
     shift 3
-    # Remaining $@ = user prompt args
 
-    # $@ from caller also has the flags array passed via nameref
     local -n flags_ref="$1"
     shift
 
@@ -113,6 +120,364 @@ launch() {
     fi
 }
 
+# ── Nomes aleatórios BR ────────────────────────────────
+
+ANIMAIS=(
+    jaguar tucano arara capivara lobo onca tatu coruja gaviao
+    cobra jacare puma sabia quero-quero tamandua preguica
+    gato-do-mato mico ariranha piranha sucuri papagaio
+    calango raposa gamba furao falcao aguia garca colibri
+    perereca surucua jabuti pintado dourado lambari pacu
+    pirararara morcego anta ema seriema curica maritaca
+    jiboia cascavel urubu carcara bem-te-vi joao-de-barro
+    uirapuru sagui mico-leao
+)
+
+ADJETIVOS=(
+    veloz bravo manso esperto forte ligeiro sabio astuto
+    furtivo calmo feroz agil solto firme valente doido
+    rapido certeiro ousado ardido sagaz danado atento
+    sereno bruto vivo leve duro safado faceiro arretado
+    pachola matuto lampeiro destro ladino manhoso lampiao
+    pavio-curto cabra-macho raiz da-gema zica top sinistro
+    monstro brabo chave pica pesado liso velho novo
+    grande pequeno magro gordo bom mau
+)
+
+gerar_nome_aleatorio() {
+    local animal="${ANIMAIS[$((RANDOM % ${#ANIMAIS[@]}))]}"
+    local adjetivo="${ADJETIVOS[$((RANDOM % ${#ADJETIVOS[@]}))]}"
+    echo "${animal}-${adjetivo}"
+}
+
+# ── Worktree: funções ──────────────────────────────────
+
+wt_get_repo_root() {
+    git rev-parse --show-toplevel 2>/dev/null
+}
+
+wt_get_repo_name() {
+    local root
+    root=$(wt_get_repo_root) || return 1
+    basename "$root"
+}
+
+wt_ensure_git() {
+    if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+        echo -e "${RED}Erro: não estamos dentro de um repositório git.${RESET}"
+        echo -e "${DIM}Navegue até um repo antes de usar worktrees.${RESET}"
+        exit 1
+    fi
+}
+
+wt_base_dir() {
+    local repo_name
+    repo_name=$(wt_get_repo_name)
+    echo "${WORKTREE_BASE}/${repo_name}"
+}
+
+wt_list() {
+    wt_ensure_git
+    local repo_root
+    repo_root=$(wt_get_repo_root)
+
+    echo -e "${BOLD}${CYAN}"
+    echo "  ┌──────────────────────────────────────────────────┐"
+    echo "  │         🌳 Worktrees Ativos                      │"
+    echo "  └──────────────────────────────────────────────────┘"
+    echo -e "${RESET}"
+
+    local count=0
+    local wt_path="" wt_branch=""
+    while IFS= read -r line; do
+        # Porcelain format: "worktree <path>", "branch refs/heads/<name>", blank line
+        if [[ "$line" == "worktree "* ]]; then
+            wt_path="${line#worktree }"
+        elif [[ "$line" == "branch "* ]]; then
+            wt_branch="${line#branch refs/heads/}"
+        elif [[ -z "$line" && -n "$wt_path" ]]; then
+            # Bloco completo — processa
+            if [[ "$wt_path" == "$repo_root" ]]; then
+                printf "  ${DIM}principal${RESET}  %-25s %s\n" "$wt_branch" "${DIM}${wt_path}${RESET}"
+            else
+                count=$((count + 1))
+
+                local status_label
+                if git -C "$wt_path" diff --quiet HEAD 2>/dev/null && \
+                   git -C "$wt_path" diff --cached --quiet HEAD 2>/dev/null; then
+                    status_label="${GREEN}limpo${RESET}"
+                else
+                    status_label="${YELLOW}modificado${RESET}"
+                fi
+
+                local last_commit
+                last_commit=$(git -C "$wt_path" log -1 --format='%cr - %s' 2>/dev/null | cut -c1-50)
+
+                printf "  ${BOLD}%d)${RESET} %-22s %b  ${DIM}%s${RESET}\n" "$count" "$wt_branch" "$status_label" "$last_commit"
+                printf "     ${DIM}%s${RESET}\n" "$wt_path"
+            fi
+            wt_path="" wt_branch=""
+        fi
+    done < <(git worktree list --porcelain 2>/dev/null; echo "")
+
+    if [[ $count -eq 0 ]]; then
+        echo -e "  ${DIM}Nenhum worktree extra ativo.${RESET}"
+    fi
+    echo ""
+}
+
+# Variável global para comunicar o nome do worktree criado
+_WT_CREATED_NAME=""
+
+wt_new() {
+    wt_ensure_git
+    local name="$1"
+    local base_dir
+    base_dir=$(wt_base_dir)
+    _WT_CREATED_NAME=""
+
+    if [[ -z "$name" ]]; then
+        echo -e "${BOLD}${CYAN}🌳 Novo Worktree${RESET}"
+        echo ""
+        local sugestao
+        sugestao=$(gerar_nome_aleatorio)
+        read -rp "$(echo -e "  Nome ${DIM}(enter = ${sugestao})${RESET}: ")" name
+        if [[ -z "$name" ]]; then
+            name="$sugestao"
+        fi
+    fi
+
+    # Sanitiza o nome: lowercase, troca espaço por hífen, remove caracteres especiais
+    name=$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9_-]//g')
+
+    if [[ -z "$name" ]]; then
+        echo -e "${RED}Erro: nome inválido.${RESET}"
+        return 1
+    fi
+
+    local wt_path="${base_dir}/${name}"
+
+    if [[ -d "$wt_path" ]]; then
+        echo -e "${RED}Erro: worktree '${name}' já existe em ${wt_path}${RESET}"
+        return 1
+    fi
+
+    mkdir -p "$base_dir"
+
+    # Verifica se a branch já existe
+    if git show-ref --verify --quiet "refs/heads/${name}"; then
+        echo -e "${YELLOW}Branch '${name}' já existe, usando ela.${RESET}"
+        if ! git worktree add "$wt_path" "$name"; then
+            echo -e "${RED}Erro ao criar worktree.${RESET}"
+            return 1
+        fi
+    else
+        if ! git worktree add -b "$name" "$wt_path"; then
+            echo -e "${RED}Erro ao criar worktree.${RESET}"
+            return 1
+        fi
+    fi
+
+    _WT_CREATED_NAME="$name"
+
+    echo ""
+    echo -e "${GREEN}✔ Worktree criado com sucesso!${RESET}"
+    echo -e "  ${BOLD}Nome:${RESET}   ${name}"
+    echo -e "  ${BOLD}Branch:${RESET} ${name}"
+    echo -e "  ${BOLD}Path:${RESET}   ${wt_path}"
+    echo ""
+    echo -e "  ${DIM}Para entrar:${RESET}  cd ${wt_path}"
+    echo -e "  ${DIM}Com Claude:${RESET}   cd ${wt_path} && ai c"
+
+    save_history "worktree:new:${name}"
+}
+
+wt_delete() {
+    wt_ensure_git
+    local name="$1"
+
+    if [[ -z "$name" ]]; then
+        # Modo interativo: lista e pede pra escolher
+        wt_list
+
+        local repo_root wt_names=()
+        repo_root=$(wt_get_repo_root)
+
+        local _p="" _b=""
+        while IFS= read -r line; do
+            if [[ "$line" == "worktree "* ]]; then
+                _p="${line#worktree }"
+            elif [[ "$line" == "branch "* ]]; then
+                _b="${line#branch refs/heads/}"
+            elif [[ -z "$line" && -n "$_p" ]]; then
+                [[ "$_p" != "$repo_root" ]] && wt_names+=("$_b")
+                _p="" _b=""
+            fi
+        done < <(git worktree list --porcelain 2>/dev/null; echo "")
+
+        if [[ ${#wt_names[@]} -eq 0 ]]; then
+            echo -e "${DIM}Nada pra remover.${RESET}"
+            return
+        fi
+
+        read -rp "$(echo -e "  ${RED}Número do worktree pra remover (0=cancelar):${RESET} ")" choice
+        [[ "$choice" == "0" || -z "$choice" ]] && return
+
+        if [[ "$choice" -ge 1 && "$choice" -le ${#wt_names[@]} ]] 2>/dev/null; then
+            name="${wt_names[$((choice - 1))]}"
+        else
+            echo -e "${RED}Opção inválida.${RESET}"
+            return
+        fi
+    fi
+
+    local base_dir
+    base_dir=$(wt_base_dir)
+    local wt_path="${base_dir}/${name}"
+
+    # Verifica se o worktree tem mudanças não commitadas
+    if [[ -d "$wt_path" ]]; then
+        if ! git -C "$wt_path" diff --quiet HEAD 2>/dev/null || \
+           ! git -C "$wt_path" diff --cached --quiet HEAD 2>/dev/null; then
+            echo -e "${YELLOW}⚠ Worktree '${name}' tem mudanças não commitadas!${RESET}"
+            read -rp "$(echo -e "  ${RED}Remover mesmo assim? (s/N):${RESET} ")" confirm
+            [[ "$confirm" != "s" && "$confirm" != "S" ]] && return
+        fi
+    fi
+
+    if git worktree remove "$wt_path" --force 2>/dev/null; then
+        # Remove a branch local se não tem tracking remoto
+        if ! git show-ref --verify --quiet "refs/remotes/origin/${name}" 2>/dev/null; then
+            git branch -D "$name" 2>/dev/null
+        fi
+
+        echo -e "${GREEN}✔ Worktree '${name}' removido.${RESET}"
+        save_history "worktree:del:${name}"
+    else
+        echo -e "${RED}Erro ao remover worktree '${name}'.${RESET}"
+    fi
+}
+
+wt_clean() {
+    wt_ensure_git
+    echo -e "${BOLD}${CYAN}🧹 Limpando worktrees órfãos...${RESET}"
+    echo ""
+
+    # Prune worktrees que apontam pra diretórios deletados
+    git worktree prune
+
+    local repo_root removed=0
+    repo_root=$(wt_get_repo_root)
+
+    local _p="" _b=""
+    while IFS= read -r line; do
+        if [[ "$line" == "worktree "* ]]; then
+            _p="${line#worktree }"
+        elif [[ "$line" == "branch "* ]]; then
+            _b="${line#branch refs/heads/}"
+        elif [[ -z "$line" && -n "$_p" ]]; then
+            if [[ "$_p" != "$repo_root" ]]; then
+                local tracking
+                tracking=$(git for-each-ref --format='%(upstream:track)' "refs/heads/${_b}" 2>/dev/null)
+                if [[ "$tracking" == "[gone]" ]]; then
+                    echo -e "  ${YELLOW}Removendo:${RESET} ${_b} ${DIM}(branch remota deletada)${RESET}"
+                    git worktree remove "$_p" --force 2>/dev/null
+                    git branch -D "$_b" 2>/dev/null
+                    removed=$((removed + 1))
+                fi
+            fi
+            _p="" _b=""
+        fi
+    done < <(git worktree list --porcelain 2>/dev/null; echo "")
+
+    if [[ $removed -eq 0 ]]; then
+        echo -e "  ${GREEN}Tudo limpo, nenhum órfão encontrado.${RESET}"
+    else
+        echo -e "  ${GREEN}✔ ${removed} worktree(s) removido(s).${RESET}"
+    fi
+    save_history "worktree:clean"
+}
+
+wt_open() {
+    wt_ensure_git
+    local name="$1"
+
+    local base_dir
+    base_dir=$(wt_base_dir)
+
+    if [[ -z "$name" ]]; then
+        wt_new ""
+        name="$_WT_CREATED_NAME"
+    fi
+
+    if [[ -z "$name" ]]; then
+        return 1
+    fi
+
+    local wt_path="${base_dir}/${name}"
+
+    if [[ ! -d "$wt_path" ]]; then
+        wt_new "$name"
+        name="$_WT_CREATED_NAME"
+    fi
+
+    wt_path="${base_dir}/${name}"
+    if [[ ! -d "$wt_path" ]]; then
+        echo -e "${RED}Erro: worktree não foi criado.${RESET}"
+        return 1
+    fi
+
+    echo -e "${GREEN}Abrindo Claude em ${wt_path}...${RESET}"
+    save_history "worktree:open:${name}"
+    cd "$wt_path" && exec claude "${CLAUDE_FLAGS[@]}" --name "${name}"
+}
+
+wt_menu() {
+    wt_ensure_git
+    local repo_name
+    repo_name=$(wt_get_repo_name)
+
+    echo -e "${BOLD}${CYAN}"
+    echo "  ┌──────────────────────────────────────────────────┐"
+    echo "  │         🌳 Worktree Manager                      │"
+    echo "  │         repo: ${repo_name}"
+    echo "  └──────────────────────────────────────────────────┘"
+    echo -e "${RESET}"
+
+    # Conta worktrees existentes
+    local repo_root wt_count=0
+    repo_root=$(wt_get_repo_root)
+    local _p=""
+    while IFS= read -r line; do
+        if [[ "$line" == "worktree "* ]]; then
+            _p="${line#worktree }"
+        elif [[ -z "$line" && -n "$_p" ]]; then
+            [[ "$_p" != "$repo_root" ]] && wt_count=$((wt_count + 1))
+            _p=""
+        fi
+    done < <(git worktree list --porcelain 2>/dev/null; echo "")
+
+    echo -e "  ${BOLD}1)${RESET} Criar novo worktree"
+    echo -e "  ${BOLD}2)${RESET} Listar worktrees ${DIM}(${wt_count} ativos)${RESET}"
+    echo -e "  ${BOLD}3)${RESET} Remover worktree"
+    echo -e "  ${BOLD}4)${RESET} Limpar órfãos"
+    echo -e "  ${BOLD}5)${RESET} Criar + abrir Claude"
+    echo -e "  ${DIM}0) Voltar${RESET}"
+    echo ""
+
+    read -rp "Escolha [1-5/0]: " choice
+
+    case $choice in
+        1) wt_new "" ;;
+        2) wt_list ;;
+        3) wt_delete "" ;;
+        4) wt_clean ;;
+        5) wt_open "" ;;
+        0) return ;;
+        *) echo -e "${RED}Opção inválida.${RESET}" ;;
+    esac
+}
+
 # ── Versão ───────────────────────────────────────────────
 
 if [[ ${1:-} == "-v" || ${1:-} == "--version" ]]; then
@@ -126,20 +491,42 @@ if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
     cat <<'HELP'
 Uso: ai [opção] ["prompt"]
 
-Opções:
-  claude, c    Abre Claude Code
-  codex,  x    Abre Codex CLI
-  gemini, g    Abre Gemini CLI
-  -h, --help   Mostra esta ajuda
-  -v, --version  Mostra a versão
-  --config     Abre este script para editar
-  --history    Mostra histórico de uso
+CLIs de IA:
+  claude, c              Abre Claude Code
+  c fast                 Sonnet + effort low (tarefas rápidas)
+  c full                 Opus + effort max (tarefas pesadas)
+  c plan                 Opus + modo planejamento
+  c sonnet / c opus      Escolhe modelo direto
+  c -c                   Continua última conversa
+  c -r                   Resume sessão (picker interativo)
+  c -n "nome"            Sessão nomeada
+  c --bare               Modo mínimo (sem hooks/plugins)
+  codex,  x              Abre Codex CLI
+  gemini, g              Abre Gemini CLI
+
+Worktrees:
+  w, wt            Menu interativo de worktrees
+  w new [nome]     Cria worktree (nome aleatório se vazio)
+  w ls             Lista worktrees ativos
+  w del [nome]     Remove worktree
+  w clean          Limpa worktrees órfãos
+  w open [nome]    Cria worktree + abre Claude nele
+
+Geral:
+  -h, --help       Mostra esta ajuda
+  -v, --version    Mostra a versão
+  --config         Abre este script para editar
+  --history        Mostra histórico de uso
 
 Exemplos:
   ai                        Menu interativo
   ai c                      Abre Claude direto
-  ai c "corrige o bug"      Abre Claude com prompt
-  ai g "explica este código" Abre Gemini com prompt
+  ai c fast                 Claude Sonnet rápido
+  ai c full "refatora tudo" Opus max effort com prompt
+  ai c -c                   Continua última conversa
+  ai c -r                   Resume sessão anterior
+  ai w new                  Cria worktree com nome aleatório BR
+  ai w open meu-fix         Cria worktree e abre Claude nele
 HELP
     exit 0
 fi
@@ -163,11 +550,56 @@ fi
 # ── Atalhos diretos ──────────────────────────────────────
 
 if [[ ${1:-} == "claude" || ${1:-} == "c" ]]; then
-    shift; launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS "$@"
+    shift
+    # Verifica se o primeiro arg é um perfil
+    profile_name="${1:-}"
+    if [[ -n "$profile_name" && -n "${CLAUDE_PROFILES[$profile_name]+x}" ]]; then
+        shift
+        # shellcheck disable=SC2206
+        extra_flags=(${CLAUDE_PROFILES[$profile_name]})
+        CLAUDE_FLAGS+=("${extra_flags[@]}")
+    fi
+    # Flags passthrough: -c, -r, --continue, --resume, --name, --worktree
+    while [[ $# -gt 0 && ${1:-} == -* ]]; do
+        case "$1" in
+            -c|--continue)       CLAUDE_FLAGS+=("--continue"); shift ;;
+            -r|--resume)         CLAUDE_FLAGS+=("--resume"); shift
+                                 [[ $# -gt 0 && "${1:0:1}" != "-" ]] && CLAUDE_FLAGS+=("$1") && shift ;;
+            -n|--name)           shift
+                                 [[ $# -gt 0 ]] && CLAUDE_FLAGS+=("--name" "$1") && shift ;;
+            -w|--worktree)       CLAUDE_FLAGS+=("--worktree"); shift
+                                 [[ $# -gt 0 && "${1:0:1}" != "-" ]] && CLAUDE_FLAGS+=("$1") && shift ;;
+            --model)             shift
+                                 [[ $# -gt 0 ]] && CLAUDE_FLAGS+=("--model" "$1") && shift ;;
+            --effort)            shift
+                                 [[ $# -gt 0 ]] && CLAUDE_FLAGS+=("--effort" "$1") && shift ;;
+            --add-dir)           shift
+                                 [[ $# -gt 0 ]] && CLAUDE_FLAGS+=("--add-dir" "$1") && shift ;;
+            --bare)              CLAUDE_FLAGS+=("--bare"); shift ;;
+            *)                   break ;;
+        esac
+    done
+    launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS "$@"
 elif [[ ${1:-} == "codex" || ${1:-} == "x" ]]; then
     shift; launch "Codex" codex "$CODEX_PROMPT_FLAG" CODEX_FLAGS "$@"
 elif [[ ${1:-} == "gemini" || ${1:-} == "g" ]]; then
     shift; launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" GEMINI_FLAGS "$@"
+elif [[ ${1:-} == "w" || ${1:-} == "wt" ]]; then
+    shift
+    subcmd="${1:-}"
+    [[ -n "$subcmd" ]] && shift
+    case "$subcmd" in
+        new)   wt_new "${1:-}" ;;
+        ls)    wt_list ;;
+        del)   wt_delete "${1:-}" ;;
+        clean) wt_clean ;;
+        open)  wt_open "${1:-}" "${2:-claude}" ;;
+        "")    wt_menu ;;
+        *)     echo -e "${RED}Subcomando desconhecido: ${subcmd}${RESET}"
+               echo "Use: ai w new|ls|del|clean|open"
+               exit 1 ;;
+    esac
+    exit 0
 elif [[ -n ${1:-} ]]; then
     echo "Opção desconhecida: $1"
     echo "Use: ai --help"
@@ -193,6 +625,8 @@ echo -e "${RESET}"
 printf "  ${BOLD}1)${RESET} Claude Code  %-20s %b\n" "${claude_ver}" "${claude_status}"
 printf "  ${BOLD}2)${RESET} Codex        %-20s %b\n" "${codex_ver}" "${codex_status}"
 printf "  ${BOLD}3)${RESET} Gemini       %-20s %b\n" "${gemini_ver}" "${gemini_status}"
+echo ""
+echo -e "  ${BOLD}4)${RESET} 🌳 Worktree Manager"
 echo -e "  ${DIM}0) Sair${RESET}"
 echo ""
 
@@ -205,12 +639,13 @@ echo ""
 show_last_used
 echo ""
 
-read -rp "Escolha [1/2/3/0]: " choice
+read -rp "Escolha [1-4/0]: " choice
 
 case $choice in
     1) launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS ;;
     2) launch "Codex" codex "$CODEX_PROMPT_FLAG" CODEX_FLAGS ;;
     3) launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" GEMINI_FLAGS ;;
+    4) wt_menu ;;
     0) echo "Saindo."; exit 0 ;;
     *) echo "Opção inválida."; exit 1 ;;
 esac
