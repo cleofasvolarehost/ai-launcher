@@ -432,6 +432,37 @@ wt_open() {
     cd "$wt_path" && exec claude "${CLAUDE_FLAGS[@]}" --name "${name}"
 }
 
+# Cria worktree e faz cd pra ele. Usado por qualquer CLI com -w.
+# Seta _WT_DIR com o path para o caller fazer cd.
+_WT_DIR=""
+
+wt_prepare() {
+    local wt_name="$1"
+
+    wt_ensure_git
+
+    local base_dir
+    base_dir=$(wt_base_dir)
+
+    if [[ -z "$wt_name" ]]; then
+        wt_new ""
+        wt_name="$_WT_CREATED_NAME"
+    else
+        local wt_path="${base_dir}/${wt_name}"
+        if [[ ! -d "$wt_path" ]]; then
+            wt_new "$wt_name"
+            wt_name="$_WT_CREATED_NAME"
+        fi
+    fi
+
+    if [[ -z "$wt_name" ]]; then
+        return 1
+    fi
+
+    _WT_DIR="${base_dir}/${wt_name}"
+    _WT_CREATED_NAME="$wt_name"
+}
+
 wt_menu() {
     wt_ensure_git
     local repo_name
@@ -504,6 +535,9 @@ CLIs de IA:
   codex,  x              Abre Codex CLI
   gemini, g              Abre Gemini CLI
 
+  -w [nome]              Cria worktree antes de abrir (funciona com c/x/g)
+                         Nome aleatório BR se omitido
+
 Worktrees:
   w, wt            Menu interativo de worktrees
   w new [nome]     Cria worktree (nome aleatório se vazio)
@@ -523,8 +557,10 @@ Exemplos:
   ai c                      Abre Claude direto
   ai c fast                 Claude Sonnet rápido
   ai c full "refatora tudo" Opus max effort com prompt
-  ai c -c                   Continua última conversa
-  ai c -r                   Resume sessão anterior
+  ai c -w                   Cria worktree BR + abre Claude nele
+  ai x -w meu-fix           Cria worktree + abre Codex nele
+  ai g -w                   Cria worktree + abre Gemini nele
+  ai c fast -w "prompt"     Perfil + worktree + prompt
   ai w new                  Cria worktree com nome aleatório BR
   ai w open meu-fix         Cria worktree e abre Claude nele
 HELP
@@ -549,6 +585,43 @@ fi
 
 # ── Atalhos diretos ──────────────────────────────────────
 
+# Extrai -w [nome] dos argumentos de qualquer CLI.
+# Se encontrado, cria worktree e faz cd. Remove -w dos args.
+_use_worktree=false
+_wt_arg_name=""
+
+parse_worktree_flag() {
+    local new_args=()
+    _use_worktree=false
+    _wt_arg_name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -w|--worktree)
+                _use_worktree=true; shift
+                # Nome opcional do worktree
+                if [[ $# -gt 0 && "${1:0:1}" != "-" ]]; then
+                    _wt_arg_name="$1"; shift
+                fi
+                ;;
+            *) new_args+=("$1"); shift ;;
+        esac
+    done
+    _REMAINING_ARGS=("${new_args[@]+"${new_args[@]}"}")
+}
+
+enter_worktree_if_needed() {
+    local cli_name="$1"
+    if [[ "$_use_worktree" == true ]]; then
+        wt_prepare "$_wt_arg_name"
+        if [[ -n "$_WT_DIR" && -d "$_WT_DIR" ]]; then
+            echo -e "${GREEN}Worktree:${RESET} ${_WT_CREATED_NAME} → ${_WT_DIR}"
+            cd "$_WT_DIR"
+        else
+            echo -e "${RED}Erro ao preparar worktree. Abrindo ${cli_name} no diretório atual.${RESET}"
+        fi
+    fi
+}
+
 if [[ ${1:-} == "claude" || ${1:-} == "c" ]]; then
     shift
     # Verifica se o primeiro arg é um perfil
@@ -559,7 +632,10 @@ if [[ ${1:-} == "claude" || ${1:-} == "c" ]]; then
         extra_flags=(${CLAUDE_PROFILES[$profile_name]})
         CLAUDE_FLAGS+=("${extra_flags[@]}")
     fi
-    # Flags passthrough: -c, -r, --continue, --resume, --name, --worktree
+    # Extrai -w antes de processar outras flags
+    parse_worktree_flag "$@"
+    set -- "${_REMAINING_ARGS[@]+"${_REMAINING_ARGS[@]}"}"
+    # Flags passthrough do Claude
     while [[ $# -gt 0 && ${1:-} == -* ]]; do
         case "$1" in
             -c|--continue)       CLAUDE_FLAGS+=("--continue"); shift ;;
@@ -567,8 +643,6 @@ if [[ ${1:-} == "claude" || ${1:-} == "c" ]]; then
                                  [[ $# -gt 0 && "${1:0:1}" != "-" ]] && CLAUDE_FLAGS+=("$1") && shift ;;
             -n|--name)           shift
                                  [[ $# -gt 0 ]] && CLAUDE_FLAGS+=("--name" "$1") && shift ;;
-            -w|--worktree)       CLAUDE_FLAGS+=("--worktree"); shift
-                                 [[ $# -gt 0 && "${1:0:1}" != "-" ]] && CLAUDE_FLAGS+=("$1") && shift ;;
             --model)             shift
                                  [[ $# -gt 0 ]] && CLAUDE_FLAGS+=("--model" "$1") && shift ;;
             --effort)            shift
@@ -579,11 +653,26 @@ if [[ ${1:-} == "claude" || ${1:-} == "c" ]]; then
             *)                   break ;;
         esac
     done
+    # Se -w, nomeia a sessão com o nome do worktree
+    if [[ "$_use_worktree" == true && -n "$_wt_arg_name" ]]; then
+        CLAUDE_FLAGS+=("--name" "$_wt_arg_name")
+    elif [[ "$_use_worktree" == true && -n "$_WT_CREATED_NAME" ]]; then
+        CLAUDE_FLAGS+=("--name" "$_WT_CREATED_NAME")
+    fi
+    enter_worktree_if_needed "Claude"
     launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS "$@"
 elif [[ ${1:-} == "codex" || ${1:-} == "x" ]]; then
-    shift; launch "Codex" codex "$CODEX_PROMPT_FLAG" CODEX_FLAGS "$@"
+    shift
+    parse_worktree_flag "$@"
+    set -- "${_REMAINING_ARGS[@]+"${_REMAINING_ARGS[@]}"}"
+    enter_worktree_if_needed "Codex"
+    launch "Codex" codex "$CODEX_PROMPT_FLAG" CODEX_FLAGS "$@"
 elif [[ ${1:-} == "gemini" || ${1:-} == "g" ]]; then
-    shift; launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" GEMINI_FLAGS "$@"
+    shift
+    parse_worktree_flag "$@"
+    set -- "${_REMAINING_ARGS[@]+"${_REMAINING_ARGS[@]}"}"
+    enter_worktree_if_needed "Gemini"
+    launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" GEMINI_FLAGS "$@"
 elif [[ ${1:-} == "w" || ${1:-} == "wt" ]]; then
     shift
     subcmd="${1:-}"
