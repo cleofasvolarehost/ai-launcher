@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-AI_LAUNCHER_VERSION="1.1.1"
+AI_LAUNCHER_VERSION="1.1.2"
 
 # ╔══════════════════════════════════════════════════════╗
 # ║  CONFIGURE SUAS FLAGS AQUI                          ║
@@ -90,6 +90,10 @@ show_last_used() {
         last=$(tail -1 "$HISTORY_FILE")
         echo -e "  ${DIM}Último uso: ${last}${RESET}"
     fi
+}
+
+normalize_choice() {
+    printf '%s' "${1:-}" | tr -d '[:space:]'
 }
 
 launch() {
@@ -333,6 +337,7 @@ wt_delete() {
         fi
 
         read -rp "$(echo -e "  ${RED}Número do worktree pra remover (0=cancelar):${RESET} ")" choice
+        choice=$(normalize_choice "$choice")
         [[ "$choice" == "0" || -z "$choice" ]] && return
 
         if [[ "$choice" -ge 1 && "$choice" -le ${#wt_names[@]} ]] 2>/dev/null; then
@@ -512,6 +517,7 @@ wt_menu() {
     echo ""
 
     read -rp "Escolha [1-5/0]: " choice
+    choice=$(normalize_choice "$choice")
 
     case $choice in
         1) wt_new "" ;;
@@ -747,6 +753,7 @@ show_last_used
 echo ""
 
 read -rp "Escolha [1-4/0]: " choice
+choice=$(normalize_choice "$choice")
 
 case $choice in
     1) launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS ;;
