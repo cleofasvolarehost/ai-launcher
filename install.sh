@@ -9,23 +9,17 @@ GREEN='\033[32m'
 YELLOW='\033[33m'
 CYAN='\033[36m'
 RED='\033[31m'
+DIM='\033[2m'
 RESET='\033[0m'
 
-INSTALL_DIR="${HOME}/.local/bin"
-REPO_RAW="https://raw.githubusercontent.com/cleofasvolarehost/ai-launcher/main"
+INSTALL_DIR="${AI_LAUNCHER_INSTALL_DIR:-${HOME}/.local/bin}"
+REPO_RAW="${AI_LAUNCHER_REPO_RAW:-https://raw.githubusercontent.com/cleofasvolarehost/ai-launcher/main}"
 
 echo -e "${BOLD}${CYAN}"
 echo "  ┌──────────────────────────────────────┐"
 echo "  │   AI CLI Launcher - Instalador       │"
 echo "  └──────────────────────────────────────┘"
 echo -e "${RESET}"
-
-# Verificar bash mínimo (precisa de 4+ para namerefs e arrays)
-if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
-    echo -e "${RED}Erro: Bash 4+ necessário (você tem ${BASH_VERSION}).${RESET}"
-    echo "  macOS: brew install bash"
-    exit 1
-fi
 
 # Criar diretório se não existir
 mkdir -p "$INSTALL_DIR"

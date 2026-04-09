@@ -8,6 +8,8 @@ Lançador interativo para CLIs de IA com flags pré-configuradas. Nunca mais esq
 curl -fsSL https://raw.githubusercontent.com/cleofasvolarehost/ai-launcher/main/install.sh | bash
 ```
 
+Compatível com o Bash padrão do macOS (`3.2`) e com Linux moderno. Não precisa instalar Bash via Homebrew.
+
 Ou manualmente:
 
 ```bash
@@ -63,7 +65,7 @@ Worktrees ficam organizados em `~/.worktrees/<repo>/<nome>`.
 - Worktree manager com nomes aleatórios BR (animal-adjetivo)
 - Listagem de worktrees com status dirty/clean
 - Limpeza automática de worktrees órfãos
-- Funciona em Linux e macOS
+- Funciona em Linux e no macOS padrão
 
 ## Pré-requisitos
 
