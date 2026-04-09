@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-AI_LAUNCHER_VERSION="1.1.2"
+AI_LAUNCHER_VERSION="1.2.0"
 
 # ╔══════════════════════════════════════════════════════╗
 # ║  CONFIGURE SUAS FLAGS AQUI                          ║
@@ -33,6 +33,175 @@ get_claude_profile_flags() {
         opus)   echo "--model opus" ;;
         *)      return 1 ;;
     esac
+}
+
+# Status line é configurado via settings.json, não via flag CLI.
+# Use: claude settings set statusLine '{model} | ⟨{cost}⟩ | ctx: {context_pct}'
+
+# ── Providers alternativos ──────────────────────────────
+# Arquivo de credenciais (criado automaticamente)
+PROVIDERS_FILE="${HOME}/.local/share/ai-launcher/providers.conf"
+mkdir -p "$(dirname "$PROVIDERS_FILE")"
+
+# Providers disponíveis: nome=base_url (URLs confirmadas pelo multi-claude)
+declare -A PROVIDER_URLS=(
+    [anthropic]=""
+    [openrouter]="https://openrouter.ai/api"
+    [deepseek]="https://api.deepseek.com/anthropic"
+    [ollama]="http://localhost:11434"
+    [lmstudio]="http://localhost:1234"
+    [litellm]="http://localhost:4000"
+)
+
+# Modelos default por provider
+declare -A PROVIDER_MODELS=(
+    [anthropic]=""
+    [openrouter]="anthropic/claude-sonnet-4"
+    [deepseek]="deepseek-chat"
+    [ollama]="qwen2.5-coder:32b"
+    [lmstudio]="loaded-model"
+    [litellm]="gpt-4o"
+)
+
+# Env vars extras por provider (timeout, tráfego, etc.)
+declare -A PROVIDER_EXTRA_ENV=(
+    [anthropic]=""
+    [openrouter]=""
+    [deepseek]="CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 API_TIMEOUT_MS=600000"
+    [ollama]="CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 API_TIMEOUT_MS=600000"
+    [lmstudio]="CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 API_TIMEOUT_MS=600000"
+    [litellm]="CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
+)
+
+_validate_provider_name() {
+    [[ "$1" =~ ^[a-z0-9_-]+$ ]]
+}
+
+provider_load_key() {
+    local provider="$1"
+    _validate_provider_name "$provider" || return 1
+    if [[ -f "$PROVIDERS_FILE" ]]; then
+        grep -F "${provider}=" "$PROVIDERS_FILE" 2>/dev/null | grep "^${provider}=" | cut -d= -f2-
+    fi
+}
+
+provider_save_key() {
+    local provider="$1" key="$2"
+    _validate_provider_name "$provider" || { echo -e "${RED}Nome de provider inválido.${RESET}"; return 1; }
+    # Garante arquivo com permissões restritivas antes de escrever
+    if [[ ! -f "$PROVIDERS_FILE" ]]; then
+        install -m 600 /dev/null "$PROVIDERS_FILE"
+    fi
+    # Remove linha antiga usando grep para evitar injection no sed
+    local tmpfile
+    tmpfile=$(mktemp)
+    trap "rm -f '$tmpfile'" RETURN
+    grep -v "^${provider}=" "$PROVIDERS_FILE" > "$tmpfile" 2>/dev/null || true
+    echo "${provider}=${key}" >> "$tmpfile"
+    mv "$tmpfile" "$PROVIDERS_FILE"
+    chmod 600 "$PROVIDERS_FILE"
+    trap - RETURN
+}
+
+provider_setup_env() {
+    local provider="$1"
+    if [[ "$provider" == "anthropic" || -z "$provider" ]]; then
+        return
+    fi
+
+    local base_url="${PROVIDER_URLS[$provider]:-}"
+    if [[ -z "$base_url" ]]; then
+        echo -e "${RED}Provider desconhecido: ${provider}${RESET}"
+        return 1
+    fi
+
+    local api_key
+    api_key=$(provider_load_key "$provider") || true
+
+    # Providers locais não precisam de key real
+    case "$provider" in
+        ollama|lmstudio|litellm)
+            api_key="${api_key:-${provider}}"
+            ;;
+        *)
+            if [[ -z "$api_key" ]]; then
+                if [[ -t 0 ]]; then
+                    read -rsp "$(echo -e "  ${BOLD}API Key para ${provider}:${RESET} ")" api_key
+                    echo ""
+                    if [[ -n "$api_key" ]]; then
+                        provider_save_key "$provider" "$api_key"
+                        echo -e "${GREEN}✔ Key salva em ${PROVIDERS_FILE}${RESET}"
+                    fi
+                else
+                    echo -e "${RED}Erro: API key para ${provider} não configurada.${RESET}"
+                    echo "  Configure: ai p add ${provider}"
+                    return 1
+                fi
+            fi
+            ;;
+    esac
+
+    # Configura env vars conforme padrão do Claude Code
+    # AUTH_TOKEN é o padrão para providers terceiros (não API_KEY)
+    export ANTHROPIC_BASE_URL="$base_url"
+    unset ANTHROPIC_API_KEY 2>/dev/null || true
+
+    case "$provider" in
+        openrouter)
+            export OPENROUTER_API_KEY="$api_key"
+            export ANTHROPIC_AUTH_TOKEN="$api_key"
+            ;;
+        *)
+            export ANTHROPIC_AUTH_TOKEN="$api_key"
+            ;;
+    esac
+
+    # Seta env vars extras do provider (timeout, disable traffic, etc.)
+    local extras="${PROVIDER_EXTRA_ENV[$provider]:-}"
+    if [[ -n "$extras" ]]; then
+        local -a extra_pairs
+        read -ra extra_pairs <<< "$extras"
+        local pair key val
+        for pair in "${extra_pairs[@]}"; do
+            key="${pair%%=*}"
+            val="${pair#*=}"
+            [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+            export "$key"="$val"
+        done
+    fi
+
+    # Model env vars para forçar o modelo em todos os contextos
+    local model="${PROVIDER_MODELS[$provider]:-}"
+    if [[ -n "$model" ]]; then
+        export ANTHROPIC_MODEL="$model"
+    fi
+
+    echo -e "${CYAN}Provider:${RESET} ${provider} → ${base_url}"
+}
+
+provider_list() {
+    echo -e "${BOLD}${CYAN}"
+    echo "  ┌──────────────────────────────────────────────────┐"
+    echo "  │         🔌 Providers Configurados                 │"
+    echo "  └──────────────────────────────────────────────────┘"
+    echo -e "${RESET}"
+
+    for p in "${!PROVIDER_URLS[@]}"; do
+        local url="${PROVIDER_URLS[$p]}"
+        local key_status
+        if [[ "$p" == "anthropic" ]]; then
+            key_status="${GREEN}OAuth/default${RESET}"
+        elif [[ "$p" == "ollama" || "$p" == "lmstudio" || "$p" == "litellm" ]]; then
+            key_status="${DIM}local (sem key)${RESET}"
+        elif [[ -n "$(provider_load_key "$p")" ]]; then
+            key_status="${GREEN}✔ key salva${RESET}"
+        else
+            key_status="${YELLOW}✗ sem key${RESET}"
+        fi
+        local model="${PROVIDER_MODELS[$p]:-}"
+        printf "  %-12s %b  ${DIM}model: %s${RESET}\n" "$p" "$key_status" "${model:-default}"
+    done
+    echo ""
 }
 
 # Diretório base para worktrees
@@ -122,17 +291,20 @@ launch() {
         exit 1
     fi
 
-    save_history "$name"
+    save_history "$name${_active_provider:+ [${_active_provider}]}"
+
+    # Cópia local para não mutar o array do caller
+    local -a final_flags=("${flags_ref[@]+"${flags_ref[@]}"}")
 
     if [[ $# -gt 0 ]]; then
         local prompt="$*"
-        echo -e "${GREEN}Iniciando ${name}:${RESET} ${cmd} ${flags_ref[*]} ${prompt_flag} \"${prompt}\""
+        echo -e "${GREEN}Iniciando ${name}:${RESET} ${cmd} ${final_flags[*]+"${final_flags[*]}"} ${prompt_flag} \"${prompt}\""
         echo ""
-        exec "$cmd" "${flags_ref[@]}" "$prompt_flag" "$prompt"
+        exec "$cmd" ${final_flags[@]+"${final_flags[@]}"} "$prompt_flag" "$prompt"
     else
-        echo -e "${GREEN}Iniciando ${name}:${RESET} ${cmd} ${flags_ref[*]}"
+        echo -e "${GREEN}Iniciando ${name}:${RESET} ${cmd} ${final_flags[*]+"${final_flags[*]}"}"
         echo ""
-        exec "$cmd" "${flags_ref[@]}"
+        exec "$cmd" ${final_flags[@]+"${final_flags[@]}"}
     fi
 }
 
@@ -253,13 +425,18 @@ wt_new() {
     _WT_CREATED_NAME=""
 
     if [[ -z "$name" ]]; then
-        echo -e "${BOLD}${CYAN}🌳 Novo Worktree${RESET}"
-        echo ""
         local sugestao
         sugestao=$(gerar_nome_aleatorio)
-        read -rp "$(echo -e "  Nome ${DIM}(enter = ${sugestao})${RESET}: ")" name
+        if [[ -t 0 ]]; then
+            # Modo interativo: pergunta o nome
+            echo -e "${BOLD}${CYAN}🌳 Novo Worktree${RESET}"
+            echo ""
+            read -rp "$(echo -e "  Nome ${DIM}(enter = ${sugestao})${RESET}: ")" name
+        fi
         if [[ -z "$name" ]]; then
+            # Autopilot ou enter vazio: usa nome aleatório
             name="$sugestao"
+            echo -e "${DIM}Auto-nome: ${name}${RESET}"
         fi
     fi
 
@@ -313,6 +490,12 @@ wt_delete() {
     local name="$1"
 
     if [[ -z "$name" ]]; then
+        if [[ ! -t 0 ]]; then
+            echo -e "${RED}Erro: especifique o nome do worktree em modo não-interativo.${RESET}"
+            echo "  Uso: ai w del <nome>"
+            return 1
+        fi
+
         # Modo interativo: lista e pede pra escolher
         wt_list
 
@@ -357,6 +540,11 @@ wt_delete() {
         if ! git -C "$wt_path" diff --quiet HEAD 2>/dev/null || \
            ! git -C "$wt_path" diff --cached --quiet HEAD 2>/dev/null; then
             echo -e "${YELLOW}⚠ Worktree '${name}' tem mudanças não commitadas!${RESET}"
+            if [[ ! -t 0 ]]; then
+                echo -e "${RED}Abortando: não é possível confirmar em modo não-interativo.${RESET}"
+                echo "  Use: ai w del ${name}  (em terminal interativo)"
+                return 1
+            fi
             read -rp "$(echo -e "  ${RED}Remover mesmo assim? (s/N):${RESET} ")" confirm
             [[ "$confirm" != "s" && "$confirm" != "S" ]] && return
         fi
@@ -445,8 +633,8 @@ wt_open() {
     fi
 
     echo -e "${GREEN}Abrindo Claude em ${wt_path}...${RESET}"
-    save_history "worktree:open:${name}"
-    cd "$wt_path" && exec claude "${CLAUDE_FLAGS[@]}" --name "${name}"
+    CLAUDE_FLAGS+=("--name" "${name}")
+    cd "$wt_path" && launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS
 }
 
 # Cria worktree e faz cd pra ele. Usado por qualquer CLI com -w.
@@ -484,6 +672,11 @@ wt_prepare() {
 }
 
 wt_menu() {
+    if [[ ! -t 0 ]]; then
+        echo -e "${RED}Erro: menu de worktrees requer terminal interativo.${RESET}"
+        echo "  Use: ai w new|ls|del|clean|open"
+        return 1
+    fi
     wt_ensure_git
     local repo_name
     repo_name=$(wt_get_repo_name)
@@ -558,6 +751,13 @@ CLIs de IA:
 
   -w [nome]              Cria worktree antes de abrir (funciona com c/x/g)
                          Nome aleatório BR se omitido
+  --via <provider>       Usa provider alternativo (openrouter, deepseek, ollama...)
+
+Providers:
+  provider, p            Menu de providers
+  p ls                   Lista providers e status das keys
+  p add <nome> [key]     Salva API key para um provider
+  p del <nome>           Remove API key de um provider
 
 Worktrees:
   w, wt            Menu interativo de worktrees
@@ -567,23 +767,29 @@ Worktrees:
   w clean          Limpa worktrees órfãos
   w open [nome]    Cria worktree + abre Claude nele
 
+Flags (toggle interativo):
+  flags, f         Menu para ligar/desligar flags antes de lançar
+
 Geral:
   -h, --help       Mostra esta ajuda
   -v, --version    Mostra a versão
   --config         Abre este script para editar
   --history        Mostra histórico de uso
-
 Exemplos:
-  ai                        Menu interativo
-  ai c                      Abre Claude direto
-  ai c fast                 Claude Sonnet rápido
-  ai c full "refatora tudo" Opus max effort com prompt
-  ai c -w                   Cria worktree BR + abre Claude nele
-  ai x -w meu-fix           Cria worktree + abre Codex nele
-  ai g -w                   Cria worktree + abre Gemini nele
-  ai c fast -w "prompt"     Perfil + worktree + prompt
-  ai w new                  Cria worktree com nome aleatório BR
-  ai w open meu-fix         Cria worktree e abre Claude nele
+  ai                              Menu interativo
+  ai c                            Abre Claude direto
+  ai c fast                       Claude Sonnet rápido
+  ai c full "refatora tudo"       Opus max effort com prompt
+  ai c -w                         Cria worktree BR + abre Claude nele
+  ai c --via openrouter           Claude via OpenRouter
+  ai c --via deepseek "explica"   DeepSeek com prompt
+  ai x -w meu-fix                 Cria worktree + abre Codex nele
+  ai g -w                         Cria worktree + abre Gemini nele
+  ai c fast -w "prompt"           Perfil + worktree + prompt
+  ai w new                        Cria worktree com nome aleatório BR
+  ai w open meu-fix               Cria worktree e abre Claude nele
+  ai p ls                         Lista providers configurados
+  ai f                            Toggle de flags antes de lançar
 HELP
     exit 0
 fi
@@ -606,28 +812,175 @@ fi
 
 # ── Atalhos diretos ──────────────────────────────────────
 
-# Extrai -w [nome] dos argumentos de qualquer CLI.
-# Se encontrado, cria worktree e faz cd. Remove -w dos args.
+# Extrai -w [nome] e --via [provider] e --no-status dos argumentos.
 _use_worktree=false
 _wt_arg_name=""
+_active_provider=""
+declare -a _REMAINING_ARGS=()
 
-parse_worktree_flag() {
+parse_global_flags() {
     local new_args=()
     _use_worktree=false
     _wt_arg_name=""
+    _active_provider=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -w|--worktree)
                 _use_worktree=true; shift
-                # Nome opcional do worktree
                 if [[ $# -gt 0 && "${1:0:1}" != "-" ]]; then
                     _wt_arg_name="$1"; shift
+                fi
+                ;;
+            --via)
+                shift
+                if [[ $# -gt 0 ]]; then
+                    _active_provider="$1"; shift
                 fi
                 ;;
             *) new_args+=("$1"); shift ;;
         esac
     done
     _REMAINING_ARGS=("${new_args[@]+"${new_args[@]}"}")
+}
+
+# ── Flag toggle interativo ──────────────────────────────
+
+CLAUDE_FLAGS_FILE="${HOME}/.local/share/ai-launcher/claude-flags.conf"
+
+flags_menu() {
+    echo -e "${BOLD}${CYAN}"
+    echo "  ┌──────────────────────────────────────────────────┐"
+    echo "  │         ⚙️  Toggle de Flags                       │"
+    echo "  └──────────────────────────────────────────────────┘"
+    echo -e "${RESET}"
+
+    # Flags disponíveis para toggle
+    local -a all_flags=(
+        "--dangerously-skip-permissions"
+        "--model sonnet"
+        "--model opus"
+        "--effort low"
+        "--effort max"
+        "--bare"
+        "--continue"
+        "--verbose"
+    )
+    local -a descriptions=(
+        "Pular confirmações de permissão"
+        "Usar modelo Sonnet"
+        "Usar modelo Opus"
+        "Effort mínimo (rápido)"
+        "Effort máximo (completo)"
+        "Modo bare (sem hooks/plugins)"
+        "Continuar última conversa"
+        "Modo verboso"
+    )
+
+    local changed=true
+    while $changed; do
+        changed=false
+        echo -e "  ${BOLD}Flags atuais:${RESET} ${CLAUDE_FLAGS[*]+"${CLAUDE_FLAGS[*]}"}"
+        echo ""
+
+        for i in "${!all_flags[@]}"; do
+            local flag="${all_flags[$i]}"
+            local desc="${descriptions[$i]}"
+            local status="${RED}OFF${RESET}"
+
+            # Checa se a flag está ativa
+            local -a flag_words; read -ra flag_words <<< "$flag"
+            local is_active=false
+            if [[ ${#flag_words[@]} -eq 1 ]]; then
+                for f in "${CLAUDE_FLAGS[@]}"; do
+                    [[ "$f" == "$flag" ]] && is_active=true && break
+                done
+            else
+                # Flag com valor (--model sonnet)
+                local found_key=false
+                for j in "${!CLAUDE_FLAGS[@]}"; do
+                    if [[ "${CLAUDE_FLAGS[$j]}" == "${flag_words[0]}" ]]; then
+                        local next=$((j + 1))
+                        if [[ $next -lt ${#CLAUDE_FLAGS[@]} && "${CLAUDE_FLAGS[$next]}" == "${flag_words[1]}" ]]; then
+                            is_active=true
+                            break
+                        fi
+                    fi
+                done
+            fi
+
+            [[ "$is_active" == true ]] && status="${GREEN}ON ${RESET}"
+            printf "  ${BOLD}%d)${RESET} [%b] %-35s %s\n" "$((i + 1))" "$status" "$flag" "$desc"
+        done
+
+        echo ""
+        echo -e "  ${DIM}0) Pronto — lançar com estas flags${RESET}"
+        echo ""
+        read -rp "Toggle [1-${#all_flags[@]}/0]: " choice
+
+        [[ "$choice" == "0" || -z "$choice" ]] && break
+
+        if [[ "$choice" -ge 1 && "$choice" -le ${#all_flags[@]} ]] 2>/dev/null; then
+            changed=true
+            local idx=$((choice - 1))
+            local flag="${all_flags[$idx]}"
+            local -a flag_words; read -ra flag_words <<< "$flag"
+
+            if [[ ${#flag_words[@]} -eq 1 ]]; then
+                # Toggle flag simples
+                local new_flags=()
+                local removed=false
+                for f in "${CLAUDE_FLAGS[@]}"; do
+                    if [[ "$f" == "$flag" && "$removed" == false ]]; then
+                        removed=true
+                    else
+                        new_flags+=("$f")
+                    fi
+                done
+                if [[ "$removed" == false ]]; then
+                    new_flags+=("$flag")
+                fi
+                CLAUDE_FLAGS=("${new_flags[@]+"${new_flags[@]}"}")
+            else
+                # Toggle flag com valor — remove se existe, adiciona se não
+                local new_flags=()
+                local removed=false
+                local skip_next=false
+                for j in "${!CLAUDE_FLAGS[@]}"; do
+                    if $skip_next; then skip_next=false; continue; fi
+                    if [[ "${CLAUDE_FLAGS[$j]}" == "${flag_words[0]}" ]]; then
+                        local next=$((j + 1))
+                        if [[ $next -lt ${#CLAUDE_FLAGS[@]} && "${CLAUDE_FLAGS[$next]}" == "${flag_words[1]}" ]]; then
+                            removed=true
+                            skip_next=true
+                            continue
+                        fi
+                    fi
+                    new_flags+=("${CLAUDE_FLAGS[$j]}")
+                done
+                if [[ "$removed" == false ]]; then
+                    # Remove outras opções do mesmo grupo (--model, --effort)
+                    local group_key="${flag_words[0]}"
+                    local clean_flags=()
+                    skip_next=false
+                    for j in "${!new_flags[@]}"; do
+                        if $skip_next; then skip_next=false; continue; fi
+                        if [[ "${new_flags[$j]}" == "$group_key" ]]; then
+                            skip_next=true
+                            continue
+                        fi
+                        clean_flags+=("${new_flags[$j]}")
+                    done
+                    clean_flags+=("${flag_words[@]}")
+                    new_flags=("${clean_flags[@]}")
+                fi
+                CLAUDE_FLAGS=("${new_flags[@]+"${new_flags[@]}"}")
+            fi
+            echo ""
+        fi
+    done
+
+    echo -e "${GREEN}Flags finais:${RESET} ${CLAUDE_FLAGS[*]+"${CLAUDE_FLAGS[*]}"}"
+    echo ""
 }
 
 enter_worktree_if_needed() {
@@ -649,13 +1002,12 @@ if [[ ${1:-} == "claude" || ${1:-} == "c" ]]; then
     profile_name="${1:-}"
     if profile_flags=$(get_claude_profile_flags "$profile_name" 2>/dev/null); then
         shift
-        local_extra_flags=()
-        read -r -a local_extra_flags <<< "$profile_flags"
-        extra_flags=("${local_extra_flags[@]}")
-        CLAUDE_FLAGS+=("${extra_flags[@]}")
+        declare -a _extra_flags=()
+        read -ra _extra_flags <<< "$profile_flags"
+        CLAUDE_FLAGS+=("${_extra_flags[@]}")
     fi
-    # Extrai -w antes de processar outras flags
-    parse_worktree_flag "$@"
+    # Extrai -w, --via, --no-status antes de processar outras flags
+    parse_global_flags "$@"
     set -- "${_REMAINING_ARGS[@]+"${_REMAINING_ARGS[@]}"}"
     # Flags passthrough do Claude
     while [[ $# -gt 0 && ${1:-} == -* ]]; do
@@ -675,28 +1027,108 @@ if [[ ${1:-} == "claude" || ${1:-} == "c" ]]; then
             *)                   break ;;
         esac
     done
+    # Configura provider alternativo se --via foi passado
+    if [[ -n "$_active_provider" ]]; then
+        provider_setup_env "$_active_provider" || exit 1
+        # Seta modelo default do provider se --model não foi explicitado
+        _has_model=false
+        for f in "${CLAUDE_FLAGS[@]}"; do
+            [[ "$f" == "--model" ]] && _has_model=true && break
+        done
+        if [[ "$_has_model" == false ]]; then
+            local_model="${PROVIDER_MODELS[$_active_provider]:-}"
+            [[ -n "$local_model" ]] && CLAUDE_FLAGS+=("--model" "$local_model")
+        fi
+    fi
     enter_worktree_if_needed "Claude"
     # Auto-nomeia sessão com o worktree, se -n não foi passado manualmente
     if [[ "$_use_worktree" == true && -n "$_WT_CREATED_NAME" ]]; then
-        has_name=false
+        _has_name=false
         for f in "${CLAUDE_FLAGS[@]}"; do
-            [[ "$f" == "--name" ]] && has_name=true && break
+            [[ "$f" == "--name" ]] && _has_name=true && break
         done
-        [[ "$has_name" == false ]] && CLAUDE_FLAGS+=("--name" "$_WT_CREATED_NAME")
+        [[ "$_has_name" == false ]] && CLAUDE_FLAGS+=("--name" "$_WT_CREATED_NAME")
     fi
     launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS "$@"
 elif [[ ${1:-} == "codex" || ${1:-} == "x" ]]; then
     shift
-    parse_worktree_flag "$@"
+    parse_global_flags "$@"
     set -- "${_REMAINING_ARGS[@]+"${_REMAINING_ARGS[@]}"}"
     enter_worktree_if_needed "Codex"
     launch "Codex" codex "$CODEX_PROMPT_FLAG" CODEX_FLAGS "$@"
 elif [[ ${1:-} == "gemini" || ${1:-} == "g" ]]; then
     shift
-    parse_worktree_flag "$@"
+    parse_global_flags "$@"
     set -- "${_REMAINING_ARGS[@]+"${_REMAINING_ARGS[@]}"}"
     enter_worktree_if_needed "Gemini"
     launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" GEMINI_FLAGS "$@"
+elif [[ ${1:-} == "provider" || ${1:-} == "p" ]]; then
+    shift
+    subcmd="${1:-}"
+    [[ -n "$subcmd" ]] && shift
+    case "$subcmd" in
+        ls|list) provider_list ;;
+        add)
+            pname="${1:-}"
+            pkey="${2:-}"
+            if [[ -z "$pname" ]]; then
+                echo -e "${RED}Uso: ai p add <provider> [api-key]${RESET}"
+                echo "  Providers: ${!PROVIDER_URLS[*]}"
+                exit 1
+            fi
+            if [[ -z "${PROVIDER_URLS[$pname]+x}" ]]; then
+                echo -e "${RED}Provider desconhecido: ${pname}${RESET}"
+                echo "  Disponíveis: ${!PROVIDER_URLS[*]}"
+                exit 1
+            fi
+            if [[ -z "$pkey" && -t 0 ]]; then
+                read -rsp "$(echo -e "  ${BOLD}API Key para ${pname}:${RESET} ")" pkey
+                echo ""
+            fi
+            if [[ -n "$pkey" ]]; then
+                provider_save_key "$pname" "$pkey"
+                echo -e "${GREEN}✔ Key salva para ${pname}${RESET}"
+            else
+                echo -e "${RED}Erro: key vazia.${RESET}"
+                exit 1
+            fi
+            ;;
+        del|rm)
+            pname="${1:-}"
+            if [[ -z "$pname" ]]; then
+                echo -e "${RED}Uso: ai p del <provider>${RESET}"
+                exit 1
+            fi
+            _validate_provider_name "$pname" || { echo -e "${RED}Nome inválido.${RESET}"; exit 1; }
+            if [[ -f "$PROVIDERS_FILE" ]]; then
+                _tmpfile=$(mktemp)
+                trap "rm -f '$_tmpfile'" EXIT
+                grep -v "^${pname}=" "$PROVIDERS_FILE" > "$_tmpfile" 2>/dev/null || true
+                mv "$_tmpfile" "$PROVIDERS_FILE"
+                chmod 600 "$PROVIDERS_FILE"
+                trap - EXIT
+                echo -e "${GREEN}✔ Key removida para ${pname}${RESET}"
+            fi
+            ;;
+        "")
+            provider_list
+            ;;
+        *)
+            echo -e "${RED}Subcomando desconhecido: ${subcmd}${RESET}"
+            echo "Use: ai p ls|add|del"
+            exit 1
+            ;;
+    esac
+    exit 0
+elif [[ ${1:-} == "flags" || ${1:-} == "f" ]]; then
+    shift
+    if [[ ! -t 0 ]]; then
+        echo -e "${RED}Erro: toggle de flags requer terminal interativo.${RESET}"
+        exit 1
+    fi
+    flags_menu
+    # Após toggle, lança Claude com as flags escolhidas
+    launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS "$@"
 elif [[ ${1:-} == "w" || ${1:-} == "wt" ]]; then
     shift
     subcmd="${1:-}"
@@ -721,6 +1153,12 @@ fi
 
 # ── Menu interativo ──────────────────────────────────────
 
+if [[ ! -t 0 ]]; then
+    echo -e "${RED}Erro: menu interativo requer terminal.${RESET}"
+    echo "Use: ai c | ai x | ai g | ai --help"
+    exit 1
+fi
+
 claude_status=$(status_icon claude)
 codex_status=$(status_icon codex)
 gemini_status=$(status_icon gemini)
@@ -740,19 +1178,21 @@ printf "  ${BOLD}2)${RESET} Codex        %-20s %b\n" "${codex_ver}" "${codex_sta
 printf "  ${BOLD}3)${RESET} Gemini       %-20s %b\n" "${gemini_ver}" "${gemini_status}"
 echo ""
 echo -e "  ${BOLD}4)${RESET} 🌳 Worktree Manager"
+echo -e "  ${BOLD}5)${RESET} 🔌 Providers"
+echo -e "  ${BOLD}6)${RESET} ⚙️  Toggle Flags"
 echo -e "  ${DIM}0) Sair${RESET}"
 echo ""
 
 echo -e "${YELLOW}Flags:${RESET}"
-echo -e "  ${DIM}Claude: ${CLAUDE_FLAGS[*]}${RESET}"
-echo -e "  ${DIM}Codex:  ${CODEX_FLAGS[*]}${RESET}"
-echo -e "  ${DIM}Gemini: ${GEMINI_FLAGS[*]}${RESET}"
+echo -e "  ${DIM}Claude: ${CLAUDE_FLAGS[*]+"${CLAUDE_FLAGS[*]}"}${RESET}"
+echo -e "  ${DIM}Codex:  ${CODEX_FLAGS[*]+"${CODEX_FLAGS[*]}"}${RESET}"
+echo -e "  ${DIM}Gemini: ${GEMINI_FLAGS[*]+"${GEMINI_FLAGS[*]}"}${RESET}"
 echo ""
 
 show_last_used
 echo ""
 
-read -rp "Escolha [1-4/0]: " choice
+read -rp "Escolha [1-6/0]: " choice
 choice=$(normalize_choice "$choice")
 
 case $choice in
@@ -760,6 +1200,9 @@ case $choice in
     2) launch "Codex" codex "$CODEX_PROMPT_FLAG" CODEX_FLAGS ;;
     3) launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" GEMINI_FLAGS ;;
     4) wt_menu ;;
+    5) provider_list ;;
+    6) flags_menu
+       launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS ;;
     0) echo "Saindo."; exit 0 ;;
     *) echo "Opção inválida."; exit 1 ;;
 esac
