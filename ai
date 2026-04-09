@@ -354,7 +354,7 @@ wt_ensure_git() {
     if ! git rev-parse --is-inside-work-tree &>/dev/null; then
         echo -e "${RED}Erro: não estamos dentro de um repositório git.${RESET}"
         echo -e "${DIM}Navegue até um repo antes de usar worktrees.${RESET}"
-        exit 1
+        return 1
     fi
 }
 
@@ -365,7 +365,7 @@ wt_base_dir() {
 }
 
 wt_list() {
-    wt_ensure_git
+    wt_ensure_git || return 1
     local repo_root
     repo_root=$(wt_get_repo_root)
 
@@ -418,7 +418,7 @@ wt_list() {
 _WT_CREATED_NAME=""
 
 wt_new() {
-    wt_ensure_git
+    wt_ensure_git || return 1
     local name="$1"
     local base_dir
     base_dir=$(wt_base_dir)
@@ -486,7 +486,7 @@ wt_new() {
 }
 
 wt_delete() {
-    wt_ensure_git
+    wt_ensure_git || return 1
     local name="$1"
 
     if [[ -z "$name" ]]; then
@@ -564,7 +564,7 @@ wt_delete() {
 }
 
 wt_clean() {
-    wt_ensure_git
+    wt_ensure_git || return 1
     echo -e "${BOLD}${CYAN}🧹 Limpando worktrees órfãos...${RESET}"
     echo ""
 
@@ -604,7 +604,7 @@ wt_clean() {
 }
 
 wt_open() {
-    wt_ensure_git
+    wt_ensure_git || return 1
     local name="$1"
 
     local base_dir
@@ -644,7 +644,7 @@ _WT_DIR=""
 wt_prepare() {
     local wt_name="$1"
 
-    wt_ensure_git
+    wt_ensure_git || return 1
 
     local base_dir
     base_dir=$(wt_base_dir)
@@ -677,7 +677,7 @@ wt_menu() {
         echo "  Use: ai w new|ls|del|clean|open"
         return 1
     fi
-    wt_ensure_git
+    wt_ensure_git || return 1
     local repo_name
     repo_name=$(wt_get_repo_name)
 
@@ -749,8 +749,9 @@ CLIs de IA:
   codex,  x              Abre Codex CLI
   gemini, g              Abre Gemini CLI
 
-  -w [nome]              Cria worktree antes de abrir (funciona com c/x/g)
+  -w [nome]              Cria worktree (padrão — automático em repos git)
                          Nome aleatório BR se omitido
+  --no-wt                Desabilita criação automática de worktree
   --via <provider>       Usa provider alternativo (openrouter, deepseek, ollama...)
 
 Providers:
@@ -776,16 +777,16 @@ Geral:
   --config         Abre este script para editar
   --history        Mostra histórico de uso
 Exemplos:
-  ai                              Menu interativo
-  ai c                            Abre Claude direto
-  ai c fast                       Claude Sonnet rápido
+  ai                              Menu interativo (cria worktree auto)
+  ai c                            Claude + worktree automático
+  ai c --no-wt                    Claude sem worktree
+  ai c fast                       Claude Sonnet rápido + worktree
   ai c full "refatora tudo"       Opus max effort com prompt
-  ai c -w                         Cria worktree BR + abre Claude nele
-  ai c --via openrouter           Claude via OpenRouter
-  ai c --via deepseek "explica"   DeepSeek com prompt
-  ai x -w meu-fix                 Cria worktree + abre Codex nele
-  ai g -w                         Cria worktree + abre Gemini nele
-  ai c fast -w "prompt"           Perfil + worktree + prompt
+  ai c -w meu-fix                 Worktree com nome específico
+  ai c -c                         Continua sessão (sem worktree novo)
+  ai c --via openrouter           Claude via OpenRouter + worktree
+  ai x                            Codex + worktree automático
+  ai g                            Gemini + worktree automático
   ai w new                        Cria worktree com nome aleatório BR
   ai w open meu-fix               Cria worktree e abre Claude nele
   ai p ls                         Lista providers configurados
@@ -813,16 +814,18 @@ fi
 # ── Atalhos diretos ──────────────────────────────────────
 
 # Extrai -w [nome] e --via [provider] e --no-status dos argumentos.
-_use_worktree=false
+_use_worktree=true   # Worktree por padrão — use --no-wt para desabilitar
 _wt_arg_name=""
 _active_provider=""
+_is_continuing=false
 declare -a _REMAINING_ARGS=()
 
 parse_global_flags() {
     local new_args=()
-    _use_worktree=false
+    _use_worktree=true
     _wt_arg_name=""
     _active_provider=""
+    _is_continuing=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -w|--worktree)
@@ -830,6 +833,9 @@ parse_global_flags() {
                 if [[ $# -gt 0 && "${1:0:1}" != "-" ]]; then
                     _wt_arg_name="$1"; shift
                 fi
+                ;;
+            --no-wt|--no-worktree)
+                _use_worktree=false; _wt_arg_name=""; shift
                 ;;
             --via)
                 shift
@@ -985,9 +991,20 @@ flags_menu() {
 
 enter_worktree_if_needed() {
     local cli_name="$1"
+    # Reset estado de worktrees anteriores
+    _WT_CREATED_NAME=""
+    _WT_DIR=""
+    # Pula worktree se --continue/--resume (volta à sessão existente)
+    if [[ "$_is_continuing" == true ]]; then
+        return
+    fi
     if [[ "$_use_worktree" == true ]]; then
-        wt_prepare "$_wt_arg_name"
-        if [[ -n "$_WT_DIR" && -d "$_WT_DIR" ]]; then
+        # Pula silenciosamente se não estiver em repo git
+        if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+            echo -e "${DIM}(sem repo git — worktree pulado)${RESET}"
+            return
+        fi
+        if wt_prepare "$_wt_arg_name" && [[ -n "$_WT_DIR" && -d "$_WT_DIR" ]]; then
             echo -e "${GREEN}Worktree:${RESET} ${_WT_CREATED_NAME} → ${_WT_DIR}"
             cd "$_WT_DIR"
         else
@@ -1012,8 +1029,8 @@ if [[ ${1:-} == "claude" || ${1:-} == "c" ]]; then
     # Flags passthrough do Claude
     while [[ $# -gt 0 && ${1:-} == -* ]]; do
         case "$1" in
-            -c|--continue)       CLAUDE_FLAGS+=("--continue"); shift ;;
-            -r|--resume)         CLAUDE_FLAGS+=("--resume"); shift
+            -c|--continue)       CLAUDE_FLAGS+=("--continue"); _is_continuing=true; shift ;;
+            -r|--resume)         CLAUDE_FLAGS+=("--resume"); _is_continuing=true; shift
                                  [[ $# -gt 0 && "${1:0:1}" != "-" ]] && CLAUDE_FLAGS+=("$1") && shift ;;
             -n|--name)           shift
                                  [[ $# -gt 0 ]] && CLAUDE_FLAGS+=("--name" "$1") && shift ;;
@@ -1196,12 +1213,27 @@ read -rp "Escolha [1-6/0]: " choice
 choice=$(normalize_choice "$choice")
 
 case $choice in
-    1) launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS ;;
-    2) launch "Codex" codex "$CODEX_PROMPT_FLAG" CODEX_FLAGS ;;
-    3) launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" GEMINI_FLAGS ;;
+    1) enter_worktree_if_needed "Claude"
+       if [[ "$_use_worktree" == true && -n "${_WT_CREATED_NAME:-}" ]]; then
+           _has_name=false
+           for f in "${CLAUDE_FLAGS[@]}"; do
+               [[ "$f" == "--name" ]] && _has_name=true && break
+           done
+           [[ "$_has_name" == false ]] && CLAUDE_FLAGS+=("--name" "$_WT_CREATED_NAME")
+       fi
+       launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS ;;
+    2) enter_worktree_if_needed "Codex"
+       launch "Codex" codex "$CODEX_PROMPT_FLAG" CODEX_FLAGS ;;
+    3) enter_worktree_if_needed "Gemini"
+       launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" GEMINI_FLAGS ;;
     4) wt_menu ;;
     5) provider_list ;;
     6) flags_menu
+       # Detecta --continue/--resume toggled via flags menu
+       for _f in "${CLAUDE_FLAGS[@]}"; do
+           [[ "$_f" == "--continue" || "$_f" == "--resume" ]] && _is_continuing=true
+       done
+       enter_worktree_if_needed "Claude"
        launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS ;;
     0) echo "Saindo."; exit 0 ;;
     *) echo "Opção inválida."; exit 1 ;;
