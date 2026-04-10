@@ -7,7 +7,7 @@
 # Bash 4+ é necessário (declare -A). macOS vem com bash 3.2.
 # Se detectar versão antiga, tenta re-exec com bash do Homebrew.
 if (( BASH_VERSINFO[0] < 4 )); then
-    for _new_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    for _new_bash in /opt/homebrew/bin/bash /usr/local/bin/bash /opt/local/bin/bash; do
         if [[ -x "$_new_bash" ]] && "$_new_bash" -c '(( BASH_VERSINFO[0] >= 4 ))' 2>/dev/null; then
             exec "$_new_bash" "$0" "$@"
         fi

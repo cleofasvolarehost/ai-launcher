@@ -88,6 +88,19 @@ if ! echo "$PATH" | tr ':' '\n' | grep -q "^${HOME}/.local/bin$"; then
     fi
 fi
 
+# Aviso sobre bash 4+ (macOS vem com 3.2)
+if (( BASH_VERSINFO[0] < 4 )); then
+    _has_new_bash=false
+    for _b in /opt/homebrew/bin/bash /usr/local/bin/bash /opt/local/bin/bash; do
+        [[ -x "$_b" ]] && "$_b" -c '(( BASH_VERSINFO[0] >= 4 ))' 2>/dev/null && _has_new_bash=true && break
+    done
+    if ! "$_has_new_bash"; then
+        echo ""
+        echo -e "${YELLOW}⚠ Bash 4+ não encontrado. O launcher precisa de bash moderno.${RESET}"
+        echo -e "  Instale via: ${BOLD}brew install bash${RESET}"
+    fi
+fi
+
 echo ""
 echo -e "${GREEN}Instalado com sucesso!${RESET}"
 echo ""
