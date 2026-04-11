@@ -29,7 +29,6 @@ CODEX_FLAGS=(--dangerously-bypass-approvals-and-sandbox)
 GEMINI_FLAGS=(--yolo)
 
 # Variáveis de ambiente para cada CLI
-export CLAUDE_CODE_NO_FLICKER=1
 
 # Flag de prompt para cada CLI (cada uma usa sintaxe diferente)
 CLAUDE_PROMPT_FLAG="-p"
