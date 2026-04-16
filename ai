@@ -1072,6 +1072,9 @@ repo_scan() {
         "$HOME/code" "$HOME/Code"
         "$HOME/workspace" "$HOME/Workspace"
         "$HOME/repos" "$HOME/src" "$HOME/git"
+        "$HOME/Desktop" "$HOME/Área de Trabalho" "$HOME/Ambiente de Trabalho"
+        "$HOME/Apps" "$HOME/apps" "$HOME/sites" "$HOME/Sites"
+        "$HOME/trabalho" "$HOME/Trabalho"
     )
     local loc depth
     for loc in "${locations[@]}"; do
@@ -1143,9 +1146,25 @@ repo_pick() {
         first_run=false
 
         if [[ ${#repos[@]} -eq 0 ]]; then
-            echo -e "${RED}Nenhum repo git encontrado em ${HOME}.${RESET}"
-            echo -e "${DIM}Navegue até um repo antes (cd /seu/projeto) ou use --no-wt.${RESET}"
-            return 1
+            echo -e "${YELLOW}Nenhum repo git encontrado em ${HOME}.${RESET}"
+            echo -e "${DIM}Locais verificados: \$HOME, Documentos, projects, dev, code, workspace, Desktop…${RESET}"
+            echo ""
+            local custom_path
+            read -rp "Informe o caminho do seu projeto (enter = cancelar): " custom_path
+            custom_path="${custom_path/#\~/$HOME}"  # expande ~
+            if [[ -z "$custom_path" ]]; then
+                return 1
+            fi
+            if [[ ! -d "$custom_path/.git" ]]; then
+                echo -e "${RED}Não é um repo git: ${custom_path}${RESET}"
+                return 1
+            fi
+            local abs_path
+            abs_path=$(cd "$custom_path" && pwd)
+            repo_register "$abs_path"
+            cd "$abs_path" || return 1
+            echo -e "${GREEN}→ ${abs_path}${RESET}"
+            return 0
         fi
 
         echo -e "${BOLD}${CYAN}📦 Escolha o projeto:${RESET}"
