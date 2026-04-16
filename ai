@@ -223,6 +223,9 @@ WORKTREE_BASE="${HOME}/.worktrees"
 HISTORY_FILE="${HOME}/.local/share/ai-launcher/history"
 mkdir -p "$(dirname "$HISTORY_FILE")"
 
+# Registro de repos conhecidos (ordenado por uso recente)
+REPOS_FILE="${HOME}/.local/share/ai-launcher/repos.conf"
+
 # ── Cores (desativa se não for terminal) ─────────────────
 
 if [[ -t 1 ]]; then
@@ -780,6 +783,14 @@ Worktrees:
   w clean          Limpa worktrees órfãos
   w open [nome]    Cria worktree + abre Claude nele
 
+Repos (picker inteligente quando lançado fora de repo):
+  r, repo, repos   Lista repos conhecidos
+  r ls             Lista repos conhecidos
+  r scan           Escaneia $HOME por repos git (auto no 1º uso)
+  r add [path]     Registra repo manualmente (default: cwd)
+  r pick           Seletor interativo (dá cd no repo escolhido)
+  r forget         Esquece todos os repos
+
 Flags (toggle interativo):
   flags, f         Menu para ligar/desligar flags antes de lançar
 
@@ -1001,6 +1012,196 @@ flags_menu() {
     echo ""
 }
 
+# ── Repos conhecidos: picker inteligente ────────────────
+
+# Resolve o repo principal (mesmo se estivermos dentro de um worktree)
+repo_resolve_main() {
+    git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print $2; exit}'
+}
+
+# Registra 1+ repos no topo do arquivo (LRU). Variádico — aceita múltiplos paths.
+# Usa mkdir como lock atômico (portável Linux+macOS) e awk pra dedup preservando ordem.
+repo_register() {
+    local -a new_repos=()
+    local r
+    for r in "$@"; do
+        [[ -n "$r" && -d "$r" && -d "$r/.git" ]] && new_repos+=("$r")
+    done
+    (( ${#new_repos[@]} == 0 )) && return
+
+    # Lock atômico: tenta até 5 vezes, desiste silencioso (pior caso: perde 1 write)
+    local lock="${REPOS_FILE}.lock"
+    local tries=0
+    while ! mkdir "$lock" 2>/dev/null; do
+        tries=$((tries + 1))
+        (( tries >= 5 )) && break
+        sleep 0.1
+    done
+
+    if [[ ! -f "$REPOS_FILE" ]]; then
+        install -m 600 /dev/null "$REPOS_FILE"
+    fi
+
+    local tmp
+    tmp=$(mktemp)
+    trap "rm -f '$tmp'; rmdir '$lock' 2>/dev/null || true" RETURN
+
+    {
+        printf '%s\n' "${new_repos[@]}"
+        cat "$REPOS_FILE" 2>/dev/null || true
+    } | awk 'NF && !seen[$0]++' | head -30 > "$tmp"
+
+    mv "$tmp" "$REPOS_FILE"
+    chmod 600 "$REPOS_FILE"
+}
+
+# Registra o repo atual (chamado automaticamente quando ai é lançado dentro de um)
+repo_register_current() {
+    local main_root
+    main_root=$(repo_resolve_main)
+    [[ -n "$main_root" ]] && repo_register "$main_root"
+}
+
+# Escaneia locais comuns em busca de repos git (ignora caches/ferramentas)
+repo_scan() {
+    local -a locations=(
+        "$HOME"
+        "$HOME/Documentos" "$HOME/Documents"
+        "$HOME/projects" "$HOME/Projects"
+        "$HOME/dev" "$HOME/Dev"
+        "$HOME/code" "$HOME/Code"
+        "$HOME/workspace" "$HOME/Workspace"
+        "$HOME/repos" "$HOME/src" "$HOME/git"
+    )
+    local loc depth
+    for loc in "${locations[@]}"; do
+        [[ -d "$loc" ]] || continue
+        # Raso no $HOME (só projetos de primeiro nível), mais fundo em subdirs dedicados
+        if [[ "$loc" == "$HOME" ]]; then depth=2; else depth=4; fi
+        find "$loc" -maxdepth "$depth" -name ".git" -type d \
+            -not -path "*/node_modules/*" \
+            -not -path "*/.worktrees/*" \
+            -not -path "*/vendor/*" \
+            -not -path "*/.cache/*" \
+            -not -path "*/.codex/*" \
+            -not -path "*/.claude/*" \
+            -not -path "*/.config/*" \
+            -not -path "*/.local/*" \
+            -not -path "*/.vscode/*" \
+            -not -path "*/.npm/*" \
+            -not -path "*/Library/*" \
+            -print 2>/dev/null | while read -r git_dir; do
+            dirname "$git_dir"
+        done
+    done | sort -u
+}
+
+# Lista repos conhecidos (ordem: mais recente primeiro)
+repo_list_known() {
+    [[ -f "$REPOS_FILE" ]] && cat "$REPOS_FILE"
+}
+
+# Trunca nome longo com reticências preservando alinhamento
+_repo_display_name() {
+    local name="$1"
+    if (( ${#name} > 22 )); then
+        echo "${name:0:19}..."
+    else
+        echo "$name"
+    fi
+}
+
+# Picker interativo. Dá cd no repo escolhido. Retorna 0 em sucesso.
+# Loop até o usuário escolher/cancelar (evita recursão empilhada em 's').
+repo_pick() {
+    [[ ! -t 0 ]] && return 1
+
+    local -a repos=()
+    local line
+    local first_run=true
+
+    while true; do
+        # (Re)carrega a lista a cada iteração para refletir scans
+        repos=()
+        while IFS= read -r line; do
+            [[ -n "$line" && -d "$line" && -d "$line/.git" ]] && repos+=("$line")
+        done < <(repo_list_known)
+
+        # Auto-scan só na primeira iteração, se a lista estiver vazia
+        if [[ ${#repos[@]} -eq 0 && "$first_run" == true ]]; then
+            first_run=false
+            echo -e "${DIM}Primeira vez — escaneando seus projetos em ${HOME}...${RESET}"
+            local -a scanned=()
+            while IFS= read -r line; do
+                scanned+=("$line")
+            done < <(repo_scan)
+            if (( ${#scanned[@]} > 0 )); then
+                repo_register "${scanned[@]}"
+                repos=("${scanned[@]}")
+            fi
+        fi
+        first_run=false
+
+        if [[ ${#repos[@]} -eq 0 ]]; then
+            echo -e "${RED}Nenhum repo git encontrado em ${HOME}.${RESET}"
+            echo -e "${DIM}Navegue até um repo antes (cd /seu/projeto) ou use --no-wt.${RESET}"
+            return 1
+        fi
+
+        echo -e "${BOLD}${CYAN}📦 Escolha o projeto:${RESET}"
+        echo ""
+        local i
+        for i in "${!repos[@]}"; do
+            local repo="${repos[$i]}"
+            local name branch
+            name=$(_repo_display_name "$(basename "$repo")")
+            branch=$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo "?")
+            printf "  ${BOLD}%2d)${RESET} %-22s ${DIM}[%s] %s${RESET}\n" "$((i+1))" "$name" "$branch" "$repo"
+        done
+        echo ""
+        echo -e "  ${DIM} s) Escanear ${HOME} por mais repos${RESET}"
+        echo -e "  ${DIM} 0) Cancelar (abrir sem worktree)${RESET}"
+        echo ""
+
+        local choice
+        read -rp "Escolha [1-${#repos[@]}/s/0]: " choice
+        choice=$(normalize_choice "$choice")
+
+        case "$choice" in
+            s|S)
+                echo -e "${DIM}Escaneando...${RESET}"
+                local -a scanned=()
+                while IFS= read -r line; do
+                    scanned+=("$line")
+                done < <(repo_scan)
+                if (( ${#scanned[@]} > 0 )); then
+                    repo_register "${scanned[@]}"
+                fi
+                echo -e "${GREEN}✔ ${#scanned[@]} repo(s) indexados.${RESET}"
+                echo ""
+                continue
+                ;;
+            0|"")
+                return 1
+                ;;
+        esac
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#repos[@]} )); then
+            local picked="${repos[$((choice-1))]}"
+            if ! cd "$picked"; then
+                echo -e "${RED}Erro ao entrar em ${picked}.${RESET}"
+                return 1
+            fi
+            repo_register "$picked"
+            echo -e "${GREEN}→ ${picked}${RESET}"
+            return 0
+        fi
+
+        echo -e "${RED}Opção inválida.${RESET}"
+        echo ""
+    done
+}
+
 enter_worktree_if_needed() {
     local cli_name="$1"
     # Reset estado de worktrees anteriores
@@ -1011,10 +1212,21 @@ enter_worktree_if_needed() {
         return
     fi
     if [[ "$_use_worktree" == true ]]; then
-        # Pula silenciosamente se não estiver em repo git
         if ! git rev-parse --is-inside-work-tree &>/dev/null; then
-            echo -e "${DIM}(sem repo git — worktree pulado)${RESET}"
-            return
+            # Não estamos num repo git — oferece seletor de projetos se interativo
+            if [[ -t 0 ]]; then
+                echo -e "${YELLOW}Você não está dentro de um repo git.${RESET}"
+                if ! repo_pick; then
+                    echo -e "${DIM}(continuando sem worktree)${RESET}"
+                    return
+                fi
+            else
+                echo -e "${DIM}(sem repo git — worktree pulado; use 'cd /seu/projeto' antes)${RESET}"
+                return
+            fi
+        else
+            # Registra o repo atual para o picker lembrar em futuras invocações
+            repo_register_current
         fi
         if wt_prepare "$_wt_arg_name" && [[ -n "$_WT_DIR" && -d "$_WT_DIR" ]]; then
             echo -e "${GREEN}Worktree:${RESET} ${_WT_CREATED_NAME} → ${_WT_DIR}"
@@ -1172,6 +1384,66 @@ elif [[ ${1:-} == "w" || ${1:-} == "wt" ]]; then
         *)     echo -e "${RED}Subcomando desconhecido: ${subcmd}${RESET}"
                echo "Use: ai w new|ls|del|clean|open"
                exit 1 ;;
+    esac
+    exit 0
+elif [[ ${1:-} == "repo" || ${1:-} == "repos" || ${1:-} == "r" ]]; then
+    shift
+    subcmd="${1:-}"
+    [[ -n "$subcmd" ]] && shift
+    case "$subcmd" in
+        ls|list|"")
+            echo -e "${BOLD}${CYAN}📦 Repos conhecidos${RESET} ${DIM}(mais recente primeiro)${RESET}"
+            echo ""
+            n=0
+            while IFS= read -r line; do
+                [[ -z "$line" ]] && continue
+                n=$((n+1))
+                display=$(_repo_display_name "$(basename "$line")")
+                if [[ -d "$line/.git" ]]; then
+                    branch=$(git -C "$line" symbolic-ref --short HEAD 2>/dev/null || echo "?")
+                    printf "  ${GREEN}✔${RESET} %-22s ${DIM}[%s] %s${RESET}\n" "$display" "$branch" "$line"
+                else
+                    printf "  ${RED}✗${RESET} %-22s ${DIM}%s (sumiu)${RESET}\n" "$display" "$line"
+                fi
+            done < <(repo_list_known)
+            [[ $n -eq 0 ]] && echo -e "  ${DIM}Nenhum — rode: ai r scan${RESET}"
+            echo ""
+            ;;
+        scan)
+            echo -e "${DIM}Escaneando ${HOME}...${RESET}"
+            scanned=()
+            while IFS= read -r line; do
+                scanned+=("$line")
+            done < <(repo_scan)
+            if (( ${#scanned[@]} > 0 )); then
+                repo_register "${scanned[@]}"
+            fi
+            echo -e "${GREEN}✔ ${#scanned[@]} repo(s) indexados em ${REPOS_FILE}${RESET}"
+            ;;
+        add)
+            _add_path="${1:-$PWD}"
+            _add_path=$(cd "$_add_path" 2>/dev/null && pwd) || {
+                echo -e "${RED}Path inválido: ${1:-$PWD}${RESET}"; exit 1;
+            }
+            if [[ ! -d "$_add_path/.git" ]]; then
+                echo -e "${RED}Não é um repo git: ${_add_path}${RESET}"; exit 1;
+            fi
+            repo_register "$_add_path"
+            echo -e "${GREEN}✔ Registrado: ${_add_path}${RESET}"
+            ;;
+        forget|rm|del|clean)
+            rm -f "$REPOS_FILE"
+            echo -e "${GREEN}✔ Lista de repos esquecida.${RESET}"
+            ;;
+        pick)
+            repo_pick || { echo -e "${DIM}cancelado${RESET}"; exit 1; }
+            echo -e "${GREEN}Dica:${RESET} rode ${BOLD}ai c${RESET} agora para criar worktree aqui."
+            ;;
+        *)
+            echo -e "${RED}Subcomando desconhecido: ${subcmd}${RESET}"
+            echo "Use: ai r ls|scan|add [path]|pick|forget"
+            exit 1
+            ;;
     esac
     exit 0
 elif [[ -n ${1:-} ]]; then
