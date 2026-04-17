@@ -30,23 +30,6 @@ ai --config     # Editar flags
 ai --help       # Ajuda
 ```
 
-### Worktree Manager
-
-Gerencia worktrees git direto do launcher, com nomes aleatórios em português.
-
-```bash
-ai w            # Menu interativo de worktrees
-ai w new        # Cria worktree (nome aleatório BR: capivara-esperta, tucano-veloz...)
-ai w new meu-fix  # Cria com nome específico
-ai w ls         # Lista worktrees ativos com status
-ai w del        # Remove worktree (interativo)
-ai w del nome   # Remove worktree direto
-ai w clean      # Limpa worktrees de branches deletadas no remote
-ai w open       # Cria worktree + abre Claude Code nele
-```
-
-Worktrees ficam organizados em `~/.worktrees/<repo>/<nome>`.
-
 ## CLIs suportadas
 
 | CLI | Atalho | Flag padrão |
@@ -62,9 +45,8 @@ Worktrees ficam organizados em `~/.worktrees/<repo>/<nome>`.
 - Histórico de uso
 - Passagem de prompt direto via linha de comando
 - Flags configuráveis no topo do script
-- Worktree manager com nomes aleatórios BR (animal-adjetivo)
-- Listagem de worktrees com status dirty/clean
-- Limpeza automática de worktrees órfãos
+- Providers alternativos (OpenRouter, DeepSeek, Ollama, LM Studio, LiteLLM)
+- Picker de repos conhecidos quando lançado fora de um repo git
 - Funciona em Linux e no macOS padrão
 
 ## Pré-requisitos
