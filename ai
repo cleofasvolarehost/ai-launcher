@@ -370,6 +370,7 @@ Geral:
   -v, --version    Mostra a versão
   --config         Abre este script para editar
   --history        Mostra histórico de uso
+  install-skills   Instala as skills de code review (Claude ↔ Gemini)
 Exemplos:
   ai                              Menu interativo
   ai c                            Claude Code
@@ -850,6 +851,235 @@ elif [[ ${1:-} == "gemini" || ${1:-} == "g" ]]; then
     set -- "${_REMAINING_ARGS[@]+"${_REMAINING_ARGS[@]}"}"
     enter_repo_if_needed
     launch "Gemini" gemini "$GEMINI_PROMPT_FLAG" GEMINI_FLAGS "$@"
+elif [[ ${1:-} == "install-skills" ]]; then
+    echo -e "${GREEN}Instalando skills de Code Review (Claude ↔ Gemini)...${RESET}"
+    
+    _fail() {
+        echo -e "${RED}Erro: $1${RESET}" >&2
+        exit 1
+    }
+
+    # Verificar se as ferramentas estão no PATH
+    if ! command -v claude &> /dev/null; then
+        echo -e "${YELLOW}Aviso: 'claude' CLI não encontrado no PATH.${RESET}"
+    fi
+    if ! command -v codex &> /dev/null && ! command -v gemini &> /dev/null; then
+        echo -e "${YELLOW}Aviso: 'codex' ou 'gemini' CLI não encontrados no PATH.${RESET}"
+    fi
+
+    # Definir caminhos
+    CODEX_SKILL_DIR="$HOME/.codex/skills/claude-code-review"
+    CLAUDE_SKILL_DIR="$HOME/.claude/skills/gemini-code-review"
+    GEMINI_SKILL_DIR_CLAUDE="$HOME/.agents/skills/claude-code-review"
+    GEMINI_SKILL_DIR_CODEX="$HOME/.agents/skills/codex-code-review"
+
+    # Criar diretórios com tratamento de erro
+    mkdir -p "$CODEX_SKILL_DIR" || _fail "Não foi possível criar o diretório $CODEX_SKILL_DIR"
+    mkdir -p "$CLAUDE_SKILL_DIR" || _fail "Não foi possível criar o diretório $CLAUDE_SKILL_DIR"
+    mkdir -p "$GEMINI_SKILL_DIR_CLAUDE" || _fail "Não foi possível criar o diretório $GEMINI_SKILL_DIR_CLAUDE"
+    mkdir -p "$GEMINI_SKILL_DIR_CODEX" || _fail "Não foi possível criar o diretório $GEMINI_SKILL_DIR_CODEX"
+
+    # Skill para o Codex chamar o Claude
+    cat << 'EOF' > "${CODEX_SKILL_DIR}/SKILL.md" || _fail "Falha ao gravar skill do Codex"
+---
+name: claude-code-review
+description: Use this skill when the user asks for a senior-level code review using Claude, Claude Code, or Claude CLI. It delegates the code review task by executing the `claude` command line tool in the background to review files, git diffs, or specific commits.
+---
+
+# Claude Code Review Skill (Senior Level)
+
+This skill allows you to delegate code review tasks to the Claude Code CLI (`claude`), instructing it to act as a rigorous Staff/Senior Software Engineer.
+
+## How to Use
+
+When the user asks you to review code using Claude, you must construct a highly detailed, senior-level prompt to send to the `claude` CLI. 
+
+1. **Identify the Target:** Determine exactly what the user wants reviewed (specific files, uncommitted changes/git diff, staged changes, or a specific commit).
+2. **Execute Claude:** Use the `run_shell_command` tool to run the `claude` CLI.
+3. **CRITICAL FLAGS:** 
+   - You MUST use `-p` (or `--print`) so Claude runs non-interactively.
+   - You MUST use `--dangerously-skip-permissions` so Claude doesn't hang asking for permissions.
+4. **The Prompt:** Your prompt to Claude MUST explicitly instruct it to act as a Senior Engineer and focus on high-level concerns.
+
+### Structuring the Senior-Level Prompt
+
+When constructing the prompt string to pass to `claude`, always enforce these rules in your instruction to Claude:
+"Act as a Staff/Senior Software Engineer. Perform a rigorous code review of [TARGET]. Do not nitpick minor formatting. Focus on:
+1. Architectural flaws, tight coupling, and design patterns.
+2. Hidden bugs, concurrency issues, and edge cases.
+3. Security vulnerabilities, sanitization, and data validation.
+4. Performance bottlenecks, render cycles (if UI), and memory leaks.
+5. Maintainability, testability, and idiomatic code readability.
+Provide concrete, refactored code examples for your suggested improvements."
+
+### Example Commands
+
+**For uncommitted changes (Git Diff):**
+```bash
+claude -p --dangerously-skip-permissions "Act as a Senior Software Engineer. Review all uncommitted changes in the current repository (equivalent to git diff). Focus on architectural integrity, hidden bugs, edge cases, security, and performance. Skip formatting nitpicks. Provide concrete code improvements for any issues found."
+```
+
+**For staged changes (Ready to commit):**
+```bash
+claude -p --dangerously-skip-permissions "Act as a Senior Software Engineer. Review the currently staged git changes (equivalent to git diff --cached). Identify logic errors, architectural issues, security vulnerabilities, or performance bottlenecks before this gets committed. Provide refactored code examples where necessary."
+```
+
+**For a specific commit:**
+```bash
+claude -p --dangerously-skip-permissions "Act as a Senior Software Engineer. Review the changes introduced in commit <COMMIT_HASH>. Analyze the architectural impact, potential regressions, edge cases, and performance. Be highly critical and provide code examples for fixes."
+```
+
+**For specific files or folders:**
+```bash
+claude -p --dangerously-skip-permissions "Act as a Senior Software Engineer. Perform a deep code review of <FILE_OR_FOLDER_PATH>. Focus on security flaws, state management issues, race conditions, and best practices. Ignore superficial stylistic preferences. Provide code snippets to demonstrate better, more robust patterns."
+```
+
+### Execution Steps
+
+1. Construct the `claude -p --dangerously-skip-permissions "..."` command based on the target (diff, commit, or file) and the senior-level prompt guidelines.
+2. Execute the command using `run_shell_command`.
+3. Wait for the command to complete.
+4. Present Claude's expert review back to the user clearly, using markdown formatting.
+EOF
+
+    # Skill para o Claude chamar o Gemini
+    cat << 'EOF' > "${CLAUDE_SKILL_DIR}/SKILL.md" || _fail "Falha ao gravar skill do Claude"
+---
+name: gemini-code-review
+description: Use this skill when the user asks for a senior-level code review using Gemini, Gemini CLI, or Google's AI. It delegates the code review task by executing the `gemini` command line tool in the background to review files, git diffs, or specific commits.
+metadata:
+  author: local
+  version: "1.0.0"
+---
+
+# Gemini Code Review Skill (Senior Level)
+
+This skill allows you to delegate code review tasks to the Gemini CLI (`gemini`), instructing it to act as a rigorous Staff/Senior Software Engineer.
+
+## How to Use
+
+When the user asks you to review code using Gemini or Google AI, you must construct a highly detailed, senior-level prompt to send to the `gemini` CLI.
+
+1. **Identify the Target:** Determine exactly what the user wants reviewed (specific files, un/git diff, staged changes, or a specific commit).
+2. **Execute Gemini:** Use the `run_shell_command` tool (or execute bash command) to run the `gemini` CLI.
+3. **CRITICAL FLAGS:** 
+   - You MUST use `-p` (or `--prompt`) followed by your prompt so Gemini runs non-interactively (headless mode).
+   - You MUST use `-y` (or `--yolo`) so Gemini doesn't hang asking for tool execution permissions.
+   - You MUST use `--skip-trust` to bypass the workspace trust dialog automatically.
+4. **The Prompt:** Your prompt to Gemini MUST explicitly instruct it to act as a Senior Engineer and focus on high-level concerns.
+
+### Structuring the Senior-Level Prompt
+
+When constructing the prompt string to pass to `gemini -p`, always enforce these rules in your instruction to Gemini:
+"Act as a Staff/Senior Software Engineer. Perform a rigorous code review of [TARGET]. Do not nitpick minor formatting. Focus on:
+1. Architectural flaws, tight coupling, and design patterns.
+2. Hidden bugs, concurrency issues, and edge cases.
+3. Security vulnerabilities, sanitization, and data validation.
+4. Performance bottlenecks, render cycles (if UI), and memory leaks.
+5. Maintainability, testability, and idiomatic code readability.
+Provide concrete, refactored code examples for your suggested improvements."
+
+### Example Commands
+
+**For uncommitted changes (Git Diff):**
+```bash
+gemini -p "Act as a Senior Software Engineer. Review all uncommitted changes in the current repository (equivalent to git diff). Focus on architectural integrity, hidden bugs, edge cases, security, and performance. Skip formatting nitpicks. Provide concrete code improvements for any issues found." -y --skip-trust
+```
+
+**For staged changes (Ready to commit):**
+```bash
+gemini -p "Act as a Senior Software Engineer. Review the currently staged git changes (equivalent to git diff --cached). Identify logic errors, architectural issues, security vulnerabilities, or performance bottlenecks before this gets committed. Provide refactored code examples where necessary." -y --skip-trust
+```
+
+**For a specific commit:**
+```bash
+gemini -p "Act as a Senior Software Engineer. Review the changes introduced in commit <COMMIT_HASH>. Analyze the architectural impact, potential regressions, edge cases, and performance. Be highly critical and provide code examples for fixes." -y --skip-trust
+```
+
+**For specific files or folders:**
+```bash
+gemini -p "Act as a Senior Software Engineer. Perform a deep code review of <FILE_OR_FOLDER_PATH>. Focus on security flaws, state management issues, race conditions, and best practices. Ignore superficial stylistic preferences. Provide code snippets to demonstrate better, more robust patterns." -y --skip-trust
+```
+
+### Execution Steps
+
+1. Construct the `gemini -p "..." -y --skip-trust` command based on the target (diff, commit, or file) and the senior-level prompt guidelines.
+2. Execute the command in the shell.
+3. Wait for the command to complete.
+4. Present Gemini's expert review back to the user clearly, using markdown formatting.
+EOF
+
+    # Skill para o Gemini chamar o Claude
+    cat << 'EOF' > "${GEMINI_SKILL_DIR_CLAUDE}/SKILL.md" || _fail "Falha ao gravar skill do Gemini (Claude)"
+---
+name: claude-code-review
+description: Use this skill when the user asks for a senior-level code review using Claude, Claude Code, or Claude CLI. It delegates the code review task by executing the `claude` command line tool in the background.
+---
+
+# Claude Code Review Skill (Senior Level)
+
+This skill allows you to delegate code review tasks to the Claude Code CLI (`claude`), instructing it to act as a rigorous Staff/Senior Software Engineer.
+
+## How to Use
+
+When the user asks you to review code using Claude, construct a senior-level prompt to send to the `claude` CLI. 
+
+1. **Execute Claude:** Use `run_shell_command` tool to run the `claude` CLI.
+2. **CRITICAL FLAGS:** 
+   - `-p` (or `--print`) to run non-interactively.
+   - `--dangerously-skip-permissions` to not hang.
+
+### Structuring the Prompt
+"Act as a Staff/Senior Software Engineer. Perform a rigorous code review of [TARGET]. Do not nitpick minor formatting. Focus on:
+1. Architectural flaws, tight coupling, and design patterns.
+2. Hidden bugs, concurrency issues, and edge cases.
+3. Security vulnerabilities, sanitization.
+4. Performance bottlenecks.
+5. Maintainability and testability.
+Provide concrete refactored examples."
+
+### Example
+```bash
+claude -p --dangerously-skip-permissions "Act as a Senior Software Engineer. Review all uncommitted changes in the current repository (equivalent to git diff). Focus on architectural integrity, hidden bugs, edge cases, security, and performance. Skip formatting nitpicks. Provide concrete code improvements for any issues found."
+```
+EOF
+
+    # Skill para o Gemini chamar o Codex
+    cat << 'EOF' > "${GEMINI_SKILL_DIR_CODEX}/SKILL.md" || _fail "Falha ao gravar skill do Gemini (Codex)"
+---
+name: codex-code-review
+description: Use this skill when the user asks for a senior-level code review using Codex CLI. It delegates the code review task by executing the `codex` command line tool in the background.
+---
+
+# Codex Code Review Skill (Senior Level)
+
+This skill allows you to delegate code review tasks to the Codex CLI (`codex`), instructing it to act as a rigorous Staff/Senior Software Engineer.
+
+## How to Use
+
+When the user asks you to review code using Codex, construct a senior-level prompt to send to the `codex` CLI. 
+
+1. **Execute Codex:** Use `run_shell_command` tool to run the `codex` CLI.
+2. **CRITICAL FLAGS:** 
+   - `-p` (or `--prompt`) to run non-interactively.
+   - `--dangerously-bypass-approvals-and-sandbox` to execute autonomously.
+
+### Structuring the Prompt
+"Act as a Staff/Senior Software Engineer. Perform a rigorous code review of [TARGET]. Do not nitpick minor formatting. Focus on architectural flaws, hidden bugs, edge cases, security, and performance. Provide concrete refactored examples."
+
+### Example
+```bash
+codex -p "Act as a Senior Software Engineer. Review the changes in src/app/page.tsx. Focus on architectural integrity, hidden bugs, edge cases, security, and performance. Skip formatting nitpicks. Provide concrete code improvements for any issues found." --dangerously-bypass-approvals-and-sandbox
+```
+EOF
+
+    echo -e "${GREEN}✔ Skills instaladas com sucesso!${RESET}"
+    echo -e "  - Codex -> Claude: ${CODEX_SKILL_DIR}"
+    echo -e "  - Claude -> Gemini: ${CLAUDE_SKILL_DIR}"
+    echo -e "  - Gemini -> Claude: ${GEMINI_SKILL_DIR_CLAUDE}"
+    echo -e "  - Gemini -> Codex: ${GEMINI_SKILL_DIR_CODEX}"
+    echo -e "${YELLOW}Dica: Rode '/skills reload' se estiver com os CLIs abertos.${RESET}"
+    exit 0
 elif [[ ${1:-} == "provider" || ${1:-} == "p" ]]; then
     shift
     subcmd="${1:-}"
@@ -1011,6 +1241,7 @@ printf "  ${BOLD}3)${RESET} Gemini       %-20s %b\n" "${gemini_ver}" "${gemini_s
 echo ""
 echo -e "  ${BOLD}4)${RESET} 🔌 Providers"
 echo -e "  ${BOLD}5)${RESET} ⚙️  Toggle Flags"
+echo -e "  ${BOLD}6)${RESET} 🛠️  Instalar Skills Sênior (Review Cruzado)"
 echo -e "  ${DIM}0) Sair${RESET}"
 echo ""
 
@@ -1023,7 +1254,7 @@ echo ""
 show_last_used
 echo ""
 
-read -rp "Escolha [1-5/0]: " choice
+read -rp "Escolha [1-6/0]: " choice
 choice=$(normalize_choice "$choice")
 
 case $choice in
@@ -1041,6 +1272,7 @@ case $choice in
        done
        enter_repo_if_needed
        launch "Claude Code" claude "$CLAUDE_PROMPT_FLAG" CLAUDE_FLAGS ;;
+    6) exec "$0" install-skills ;;
     0) echo "Saindo."; exit 0 ;;
     *) echo "Opção inválida."; exit 1 ;;
 esac
