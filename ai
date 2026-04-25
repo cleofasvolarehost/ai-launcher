@@ -1025,9 +1025,10 @@ This skill allows you to delegate code review tasks to the Claude Code CLI (`cla
 When the user asks you to review code using Claude, construct a senior-level prompt to send to the `claude` CLI. 
 
 1. **Execute Claude:** Use `run_shell_command` tool to run the `claude` CLI.
-2. **CRITICAL FLAGS:** 
+2. **CRITICAL FLAGS AND SYNTAX:** 
    - `-p` (or `--print`) to run non-interactively.
    - `--dangerously-skip-permissions` to not hang.
+   - The prompt MUST be passed as a positional argument at the end.
 
 ### Structuring the Prompt
 "Act as a Staff/Senior Software Engineer. Perform a rigorous code review of [TARGET]. Do not nitpick minor formatting. Focus on:
