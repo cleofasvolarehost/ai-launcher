@@ -2985,18 +2985,25 @@ launch() {
     # Cópia local para não mutar o array do caller
     local -a final_flags=("${flags_ref[@]+"${flags_ref[@]}"}")
 
+    # kimi rejeita --yolo/--auto combinado com --prompt ("Cannot combine
+    # --prompt with --yolo"): no modo headless as flags de permissão vão fora.
+    local -a prompt_flags=("${final_flags[@]+"${final_flags[@]}"}")
+    if [[ "$cmd" == "kimi" ]]; then
+        prompt_flags=()
+    fi
+
     if [[ $# -gt 0 ]]; then
         local prompt="$*"
         if [[ -n "$prompt_flag" ]]; then
-            echo -e "${GREEN}Iniciando ${name}:${RESET} ${cmd} ${final_flags[*]+"${final_flags[*]}"} ${prompt_flag} \"${prompt}\""
+            echo -e "${GREEN}Iniciando ${name}:${RESET} ${cmd} ${prompt_flags[*]+"${prompt_flags[*]}"} ${prompt_flag} \"${prompt}\""
         else
-            echo -e "${GREEN}Iniciando ${name}:${RESET} ${cmd} ${final_flags[*]+"${final_flags[*]}"} -- \"${prompt}\""
+            echo -e "${GREEN}Iniciando ${name}:${RESET} ${cmd} ${prompt_flags[*]+"${prompt_flags[*]}"} -- \"${prompt}\""
         fi
         echo ""
         if [[ -n "$prompt_flag" ]]; then
-            exec "$cmd" ${final_flags[@]+"${final_flags[@]}"} "$prompt_flag" "$prompt"
+            exec "$cmd" ${prompt_flags[@]+"${prompt_flags[@]}"} "$prompt_flag" "$prompt"
         else
-            exec "$cmd" ${final_flags[@]+"${final_flags[@]}"} -- "$prompt"
+            exec "$cmd" ${prompt_flags[@]+"${prompt_flags[@]}"} -- "$prompt"
         fi
     else
         echo -e "${GREEN}Iniciando ${name}:${RESET} ${cmd} ${final_flags[*]+"${final_flags[*]}"}"
